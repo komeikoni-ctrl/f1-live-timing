@@ -1,0 +1,2299 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>F1 Live Timing</title>
+    <meta name="description" content="OpenF1の実データによるF1ライブタイミング。タイミングタワー、ドライバートラッカー、テレメトリをリアルタイム／リプレイ表示。" />
+    <!-- PWA: home-screen install (icon + fullscreen standalone launch) -->
+    <meta name="theme-color" content="#0a0a0c" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black" />
+    <meta name="apple-mobile-web-app-title" content="F1 Live Timing" />
+    <link rel="apple-touch-icon" href="apple-touch-icon.png" />
+    <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png" />
+    <link rel="manifest" href="manifest.json" />
+    <style>
+      /* F1 Live Timing is a pit-wall telemetry surface: dark by design in
+         both system modes (broadcast timing towers are never light). */
+      :root {
+        color-scheme: dark;
+        --bg: #050607;
+        --surface: #0c0e10;
+        --surface2: #15171b;
+        --text: #f4f6f8;
+        --dim: #9aa3ad;
+        --border: #22252b;
+        --accent: #e10600;
+        --purple: #c77dff;
+        --green: #00d26a;
+        --yellow: #ffd12e;
+        --radius: 6px;
+        --sans: "Helvetica Neue", Arial, "Hiragino Kaku Gothic ProN",
+          "Hiragino Sans", "Noto Sans JP", sans-serif;
+        --mono: "SF Mono", ui-monospace, "Roboto Mono", Menlo, monospace;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; padding: 0; }
+      body {
+        background: var(--bg);
+        color: var(--text);
+        font-family: var(--sans);
+        -webkit-text-size-adjust: 100%;
+      }
+      .mono { font-family: var(--mono); }
+      button { font-family: inherit; }
+      .hidden { display: none !important; }
+
+      /* ---------- header ---------- */
+      header.hdr {
+        border-bottom: 2px solid var(--accent);
+        background: var(--surface);
+        padding: calc(12px + env(safe-area-inset-top)) 12px 8px;
+      }
+      @media (min-width: 640px) { header.hdr { padding-left: 16px; padding-right: 16px; } }
+      .hdr-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+      .logo-badge {
+        background: var(--accent); color: #fff; font-style: italic;
+        font-weight: 900; letter-spacing: .12em; font-size: 14px;
+        padding: 4px 8px; white-space: nowrap;
+      }
+      h1.session-title {
+        margin: 0; font-size: 16px; font-weight: 800;
+        letter-spacing: .04em; text-transform: uppercase;
+      }
+      @media (min-width: 640px) { h1.session-title { font-size: 20px; } }
+      h1.session-title .sep { color: var(--dim); }
+      .live-badge {
+        display: inline-flex; align-items: center; gap: 6px;
+        background: var(--accent); color: #fff; border-radius: 2px;
+        font-family: var(--mono); font-size: 12px; font-weight: 700;
+        padding: 2px 8px;
+      }
+      .replay-badge {
+        background: var(--surface2); color: var(--dim); border-radius: 2px;
+        box-shadow: inset 0 0 0 1px var(--border);
+        font-family: var(--mono); font-size: 12px; font-weight: 700;
+        padding: 2px 8px;
+      }
+      .flag-badge {
+        border-radius: 2px; font-family: var(--mono); font-size: 12px;
+        font-weight: 700; padding: 2px 8px;
+      }
+      .live-dot {
+        display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+        background: #fff; animation: livepulse 1.2s ease-in-out infinite;
+      }
+      @keyframes livepulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
+      @media (prefers-reduced-motion: reduce) { .live-dot { animation: none; } }
+      .fresh-info { font-family: var(--mono); font-size: 11px; color: var(--dim); font-variant-numeric: tabular-nums; }
+      .fresh-info.stale { color: var(--yellow); font-weight: 700; }
+      .session-date { font-family: var(--mono); font-size: 12px; color: var(--dim); }
+      .hdr-right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+      .remain { text-align: right; }
+      .remain .lbl { font-size: 10px; font-weight: 600; letter-spacing: .14em; color: var(--dim); text-transform: uppercase; }
+      .remain .clk { font-family: var(--mono); font-size: 20px; line-height: 1; font-weight: 700; font-variant-numeric: tabular-nums; }
+      @media (max-width: 639px) { .remain { display: none; } }
+      select.session-select {
+        max-width: 210px; border: 1px solid var(--border); border-radius: 4px;
+        background: var(--surface2); color: var(--text);
+        padding: 6px 8px; font-size: 14px;
+      }
+      .btn {
+        border: 1px solid var(--border); border-radius: 4px;
+        background: var(--surface2); color: var(--text);
+        padding: 6px 10px; font-size: 14px; cursor: pointer;
+      }
+      .btn-accent {
+        background: var(--accent); border-color: var(--accent); color: #fff;
+        font-weight: 700;
+      }
+      .transport { margin-top: 8px; }
+      .cursor-clock { font-family: var(--mono); font-size: 14px; font-variant-numeric: tabular-nums; }
+      .cursor-clock .dim { color: var(--dim); margin-left: 8px; }
+      .cursor-clock .remain-sm { color: var(--dim); margin-left: 8px; }
+      @media (min-width: 640px) { .cursor-clock .remain-sm { display: none; } }
+      .play-btn {
+        background: var(--accent); color: #fff; border: none; border-radius: 4px;
+        font-family: var(--mono); font-size: 14px; font-weight: 700;
+        padding: 4px 12px; cursor: pointer;
+      }
+      .speed-group { display: flex; border-radius: 4px; overflow: hidden; box-shadow: inset 0 0 0 1px var(--border); }
+      .speed-group button {
+        border: none; padding: 4px 10px; font-family: var(--mono); font-size: 12px;
+        background: var(--surface2); color: var(--dim); cursor: pointer;
+      }
+      .speed-group button.on { background: var(--text); color: #000; font-weight: 700; }
+      input.seek { flex: 1; min-width: 140px; accent-color: var(--accent); }
+      .wx-strip { margin-left: auto; font-family: var(--mono); font-size: 12px; color: var(--dim); }
+      @media (max-width: 767px) { .wx-strip { display: none; } }
+
+      .banner-warn {
+        border-bottom: 1px solid rgba(255, 209, 46, .5);
+        background: rgba(255, 209, 46, .1); color: var(--yellow);
+        font-family: var(--mono); font-size: 11px;
+        padding: 6px 12px; margin: 0;
+      }
+      .banner-info {
+        border-bottom: 1px solid var(--border);
+        background: var(--surface2); color: var(--text);
+        font-family: var(--mono); font-size: 12px;
+        padding: 8px 12px; margin: 0;
+      }
+
+      /* ---------- layout ---------- */
+      main.layout {
+        display: grid; gap: 12px; padding: 12px;
+      }
+      @media (min-width: 640px) { main.layout { padding: 12px 16px; } }
+      @media (min-width: 1024px) {
+        main.layout { grid-template-columns: minmax(480px, 620px) 1fr; }
+        .col-map { order: 2; } .col-tower { order: 1; }
+      }
+      .col-map { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+      .col-tower { min-width: 0; }
+      .card {
+        border: 1px solid var(--border); border-radius: var(--radius);
+        background: var(--surface); position: relative;
+      }
+      .card-pad { padding: 12px; }
+      .card h2.card-title {
+        margin: 0; font-size: 14px; font-weight: 800;
+        letter-spacing: .12em; text-transform: uppercase;
+      }
+      .card h2.card-title .sub {
+        margin-left: 8px; font-family: var(--mono); font-size: 12px;
+        font-weight: 400; color: var(--dim); text-transform: none;
+        letter-spacing: 0;
+      }
+
+      /* ---------- track map ---------- */
+      .map-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 4px; gap: 8px; }
+      .map-legend { display: flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 11px; color: var(--dim); }
+      .map-legend .sw { display: inline-block; width: 16px; height: 4px; }
+      @media (max-width: 639px) { .map-legend .lg { display: none; } }
+      .map-wrap svg { width: 100%; max-height: 430px; display: block; }
+      .map-overlay {
+        position: absolute; right: 12px; bottom: 12px;
+        display: flex; align-items: center; gap: 8px;
+        background: rgba(0, 0, 0, .7); border-radius: 4px;
+        padding: 6px 10px; font-family: var(--mono);
+        backdrop-filter: blur(2px); pointer-events: none;
+        max-width: calc(100% - 24px);
+      }
+      .map-overlay .bar { display: inline-block; width: 6px; height: 16px; }
+      .map-overlay .acr { font-size: 14px; font-weight: 800; letter-spacing: .04em; }
+      .map-overlay .spd { font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
+      .map-overlay .spd .unit { font-size: 10px; font-weight: 400; color: var(--dim); margin-left: 4px; }
+      .map-overlay .gear { font-size: 12px; color: var(--dim); font-variant-numeric: tabular-nums; }
+      .map-overlay .note { font-size: 12px; color: var(--dim); }
+      .drs-chip { background: var(--green); color: #000; border-radius: 2px; padding: 0 4px; font-size: 10px; font-weight: 700; }
+      .map-note { margin: 4px 0 0; padding-right: 176px; font-family: var(--mono); font-size: 11px; color: var(--dim); line-height: 1.6; }
+      @media (max-width: 639px) {
+        .map-note { padding-right: 0; }
+        /* In-flow on phones: the absolute chip used to sit on top of the
+           note text (user screenshot, 2026-10-24). */
+        .map-overlay { position: static; width: fit-content; margin: 8px 0 2px auto; }
+      }
+
+      /* ---------- detail ---------- */
+      .detail-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
+      .num-badge {
+        display: flex; align-items: center; justify-content: center;
+        width: 36px; height: 36px; border-radius: 3px;
+        font-family: var(--mono); font-size: 16px; font-weight: 900; color: #fff;
+      }
+      .detail-head h2 { margin: 0; font-size: 18px; font-weight: 800; letter-spacing: .03em; text-transform: uppercase; }
+      .detail-head h2 .team { margin-left: 8px; font-family: var(--mono); font-size: 14px; font-weight: 400; color: var(--dim); text-transform: none; }
+      .detail-head .pos-lap { margin-left: auto; font-family: var(--mono); font-size: 12px; color: var(--dim); }
+      .stat-grid { margin-top: 12px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px 16px; font-family: var(--mono); }
+      @media (min-width: 640px) { .stat-grid { grid-template-columns: repeat(5, 1fr); } }
+      .stat-grid .lbl { font-size: 11px; font-weight: 600; letter-spacing: .08em; color: var(--dim); text-transform: uppercase; }
+      .stat-grid .val { font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; }
+      .sect-label { margin-bottom: 4px; font-size: 11px; color: var(--dim); line-height: 1.5; }
+      .sect-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; font-family: var(--mono); }
+      .sect-grid4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; font-family: var(--mono); }
+      .sect-box { background: var(--surface2); border-radius: 3px; padding: 6px 8px; }
+      .sect-box .top { display: flex; align-items: baseline; justify-content: space-between; }
+      .sect-box .nm { font-size: 11px; font-weight: 700; color: var(--dim); }
+      .sect-box .sp { font-size: 11px; color: var(--dim); }
+      .sect-box .vl { font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; }
+      .sect-box .vl.dimv { color: var(--dim); }
+      .sect-box.ring-purple { box-shadow: inset 0 0 0 1px rgba(199, 125, 255, .5); }
+
+      .history-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+      .history-cols, .history-row-grid {
+        display: grid; grid-template-columns: 26px 60px repeat(3, minmax(0, 1fr)) 50px;
+        align-items: center; column-gap: 6px;
+      }
+      .history-cols {
+        border-bottom: 1px solid var(--border); padding-bottom: 4px;
+        font-family: var(--mono); font-size: 10px; font-weight: 700;
+        letter-spacing: .08em; color: var(--dim); text-transform: uppercase;
+      }
+      .history-scroll { max-height: 320px; overflow-y: auto; margin: 0; padding: 0; list-style: none; }
+      .history-scroll li { border-bottom: 1px solid rgba(255, 255, 255, .05); }
+      .history-scroll li:last-child { border-bottom: none; }
+      .history-btn {
+        width: 100%; text-align: left; background: none; border: none;
+        color: var(--text); padding: 6px 4px; cursor: pointer;
+        font-family: var(--mono); font-variant-numeric: tabular-nums;
+      }
+      .history-btn:hover { background: rgba(255, 255, 255, .05); }
+      .history-btn.focused { background: rgba(255, 255, 255, .12); box-shadow: inset 3px 0 0 var(--text); }
+      .history-row-grid { font-size: 12px; }
+      .history-row-grid .lapno { font-weight: 700; }
+      .history-row-grid .laptime { font-weight: 700; }
+      .history-sub { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; padding-left: 33px; margin-top: 2px; font-size: 10px; color: var(--dim); }
+      .tag { border-radius: 2px; padding: 0 4px; font-weight: 700; font-size: 10px; }
+      .tag-out { background: #ff8c1a; color: #000; }
+      .tag-prog { background: var(--yellow); color: #000; }
+      .tag-fl { color: var(--purple); }
+      .tyre-chip {
+        display: inline-flex; align-items: center; justify-content: center;
+        width: 16px; height: 16px; border-radius: 50%;
+        font-size: 10px; font-weight: 700; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .25);
+        flex: none;
+      }
+      .tyre-cell { display: flex; align-items: center; gap: 4px; }
+      .tyre-cell .age { font-size: 10px; color: var(--dim); }
+      .focus-banner {
+        margin-top: 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+        background: rgba(255, 255, 255, .1); border-radius: 3px; padding: 6px 8px;
+      }
+      .focus-banner .t { font-family: var(--mono); font-size: 12px; font-weight: 700; }
+      .focus-banner button {
+        margin-left: auto; background: var(--accent); color: #fff; border: none;
+        border-radius: 4px; font-family: var(--mono); font-size: 11px; font-weight: 700;
+        padding: 2px 8px; cursor: pointer;
+      }
+      .charts { margin-top: 12px; display: grid; gap: 12px; }
+      @media (min-width: 640px) { .charts { grid-template-columns: repeat(3, 1fr); } }
+      .chart-head { display: flex; align-items: baseline; justify-content: space-between; }
+      .chart-head .lbl { font-size: 11px; font-weight: 600; letter-spacing: .08em; color: var(--dim); text-transform: uppercase; }
+      .chart-head .val { font-family: var(--mono); font-size: 12px; font-variant-numeric: tabular-nums; }
+      .chart-svg { margin-top: 2px; width: 100%; height: 48px; display: block; }
+      .chart-note { margin-top: 4px; font-family: var(--mono); font-size: 11px; color: var(--dim); line-height: 1.6; }
+      .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+      .stint-chip {
+        display: flex; align-items: center; gap: 6px;
+        background: var(--surface2); border-radius: 3px; padding: 4px 8px;
+        font-family: var(--mono); font-size: 12px;
+      }
+      .stint-chip.current { box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .4); }
+      .block { margin-top: 12px; }
+
+      /* ---------- tower ---------- */
+      .tower-card { overflow: hidden; }
+      .tower-head, .tower-row {
+        display: grid; align-items: center; column-gap: 6px;
+        grid-template-columns: 26px 5px 48px 1fr auto auto;
+        padding-left: 8px; padding-right: 8px;
+      }
+      @media (min-width: 640px) {
+        .tower-head, .tower-row {
+          grid-template-columns: 30px 5px 48px 60px 60px 46px 46px 46px 40px 24px 48px 48px;
+        }
+      }
+      .tower-head {
+        border-bottom: 2px solid var(--border); background: var(--surface2);
+        padding-top: 6px; padding-bottom: 6px;
+        font-family: var(--mono); font-size: 10px; font-weight: 700;
+        letter-spacing: .14em; color: var(--dim); text-transform: uppercase;
+      }
+      .tower-head .r, .tower-row .r { text-align: right; }
+      .only-sm { display: none; }
+      @media (min-width: 640px) { .only-sm { display: block; } span.only-sm { display: block; } }
+      .tower-list { margin: 0; padding: 0; list-style: none; }
+      .tower-list li { border-bottom: 1px solid rgba(255, 255, 255, .05); }
+      .tower-list li:last-child { border-bottom: none; }
+      .tower-row {
+        width: 100%; background: none; border: none; color: var(--text);
+        text-align: left; padding-top: 5px; padding-bottom: 5px; cursor: pointer;
+        font-family: var(--mono); font-variant-numeric: tabular-nums;
+      }
+      .tower-row:hover { background: rgba(255, 255, 255, .05); }
+      .tower-row.selected { background: rgba(255, 255, 255, .1); box-shadow: inset 3px 0 0 var(--text); }
+      .tower-row.ferrari { background: rgba(225, 6, 0, .1); }
+      .tower-row.ferrari:hover { background: rgba(225, 6, 0, .18); }
+      .tower-row .pos { font-size: 16px; font-weight: 900; }
+      .tower-row .pos.unknown { color: var(--dim); font-size: 13px; }
+      .tower-row .cbar { height: 24px; border-radius: 2px; width: 4px; }
+      .tower-row .cbar.wide { width: 5px; }
+      .tower-row .acr-cell { display: flex; align-items: baseline; gap: 4px; }
+      .tower-row .acr { font-size: 14px; font-weight: 800; letter-spacing: .03em; }
+      .mini-tag { border-radius: 2px; padding: 0 4px; font-size: 9px; font-weight: 700; color: #000; }
+      .mini-tag.out { background: #ff8c1a; }
+      .mini-tag.fl { background: var(--purple); }
+      .tower-row .best { font-size: 12px; font-weight: 700; }
+      .tower-row .last { font-size: 12px; }
+      .tower-row .sect {
+        font-size: 11px; border-radius: 2px; padding: 0 2px; white-space: nowrap;
+      }
+      .tower-row .tyre { display: flex; align-items: center; gap: 4px; }
+      .tower-row .pit { font-size: 12px; color: var(--dim); }
+      .tower-row .int { font-size: 12px; color: var(--dim); text-align: right; }
+      .tower-row .gap { font-size: 12px; font-weight: 700; text-align: right; }
+      .sub-line {
+        grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center;
+        gap: 2px 12px; padding-top: 2px; font-size: 11px; color: var(--dim);
+      }
+      @media (min-width: 640px) { .sub-line { display: none; } }
+      .sub-line .v { color: var(--text); }
+      .sub-line .sects { display: flex; gap: 6px; white-space: nowrap; }
+      .sub-line .sects .s { border-radius: 2px; padding: 0 2px; }
+      .tower-note { margin: 8px 4px 0; padding: 0 4px 4px; font-family: var(--mono); font-size: 11px; line-height: 1.7; color: var(--dim); }
+      .empty-msg { padding: 40px 12px; text-align: center; font-family: var(--mono); font-size: 14px; color: var(--dim); line-height: 1.8; }
+
+      /* ---------- race control / weather ---------- */
+      .bottom-grid { display: grid; gap: 12px; padding: 0 12px 24px; }
+      @media (min-width: 640px) { .bottom-grid { padding: 0 16px 24px; } }
+      @media (min-width: 1024px) { .bottom-grid { grid-template-columns: 1fr 300px; } }
+      .rc-list { max-height: 256px; overflow-y: auto; margin: 8px 0 0; padding: 0 4px 0 0; list-style: none; }
+      .rc-list li { display: flex; align-items: flex-start; gap: 8px; font-family: var(--mono); font-size: 12px; line-height: 1.6; margin-bottom: 6px; }
+      .rc-list .time { flex: none; color: var(--dim); }
+      .rc-list .flag { flex: none; border-radius: 2px; padding: 0 4px; font-size: 10px; font-weight: 700; }
+      .wx-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; font-family: var(--mono); font-size: 14px; font-variant-numeric: tabular-nums; margin-top: 8px; }
+      .wx-grid dt { font-size: 11px; color: var(--dim); }
+      .wx-grid dd { margin: 0; font-weight: 700; }
+
+      .boot { padding: 64px 16px; text-align: center; }
+      .boot p { font-family: var(--mono); font-size: 14px; color: var(--dim); line-height: 1.8; }
+      .boot .btn-accent { border-radius: 4px; padding: 8px 16px; font-size: 14px; cursor: pointer; border: none; margin-top: 16px; }
+    </style>
+  </head>
+  <body>
+    <div id="boot" class="boot">
+      <p>セッション情報を読み込み中…</p>
+    </div>
+
+    <div id="mainUI" class="hidden">
+      <header class="hdr">
+        <div class="hdr-row">
+          <span class="logo-badge">LIVE TIMING</span>
+          <h1 class="session-title" id="sessionTitle"></h1>
+          <span id="liveBadge"></span>
+          <span id="flagBadge"></span>
+          <span class="fresh-info" id="freshInfo"></span>
+          <span class="session-date" id="sessionDate"></span>
+          <div class="hdr-right">
+            <div class="remain">
+              <div class="lbl" id="remainLabel">Time Remaining</div>
+              <div class="clk" id="remainClock">0:00:00</div>
+            </div>
+            <select class="session-select" id="sessionSelect" aria-label="セッション選択"></select>
+            <button type="button" class="btn" id="refreshBtn" aria-label="データを更新">↻ 更新</button>
+          </div>
+        </div>
+        <div class="hdr-row transport">
+          <span class="cursor-clock"><span id="cursorClock">--:--:--</span><span class="dim" id="elapsedInfo"></span><span class="remain-sm" id="remainSm"></span></span>
+          <span id="transportControls" class="hdr-row" style="gap:8px; flex:1; display:flex;">
+            <button type="button" class="play-btn" id="playBtn" aria-label="再生">▶ 再生</button>
+            <span class="speed-group" id="speedGroup"></span>
+            <input type="range" class="seek" id="seek" min="0" max="1" step="1" value="0" aria-label="再生位置" />
+          </span>
+          <span class="wx-strip" id="wxStrip"></span>
+        </div>
+      </header>
+
+      <p class="banner-warn hidden" id="staleBanner"></p>
+      <p class="banner-info hidden" id="upcomingBanner"></p>
+
+      <main class="layout">
+        <section class="col-map">
+          <div class="card card-pad">
+            <div class="map-head">
+              <h2 class="card-title">Driver Tracker<span class="sub" id="circuitName"></span></h2>
+              <span class="map-legend">
+                <span class="lg">S1</span><span class="sw lg" style="background:#d7dde5"></span>
+                <span class="lg">S2</span><span class="sw lg" style="background:#8f9aab"></span>
+                <span class="lg">S3</span><span class="sw lg" style="background:#5b6675"></span>
+                <span id="locStatus"></span>
+              </span>
+            </div>
+            <div class="map-wrap" id="mapWrap"></div>
+            <div class="map-overlay hidden" id="mapOverlay"></div>
+            <p class="map-note">点をタップするとそのドライバーを選択します。セクター境界は実セクター時間比による概略、コーナー番号とピットレーンは概略表示です。</p>
+          </div>
+          <div class="card card-pad" id="detailCard"></div>
+        </section>
+
+        <section class="col-tower">
+          <div class="card tower-card">
+            <div class="tower-head">
+              <span>P</span><span></span><span>Driver</span>
+              <span class="only-sm">Best</span>
+              <span class="only-sm">Last</span>
+              <span class="only-sm">S1</span>
+              <span class="only-sm">S2</span>
+              <span class="only-sm">S3</span>
+              <span class="only-sm">Tyre</span>
+              <span class="only-sm">Pit</span>
+              <span class="only-sm r">Int</span>
+              <span class="r">Gap</span>
+            </div>
+            <div id="towerBody"></div>
+          </div>
+          <p class="tower-note">
+            S1/S2/S3は現在走行中ラップのライブセクターで、車が各セクターを通過した順に表示されます（色は通過時点の判定：紫=全体ベスト、緑=自己ベスト、黄=自己ベストより遅い）。
+            INTは前車との差、GAPはリーダーとの差（レース時はintervals実測、プラクティス時はベストラップ差）。PITはカーソル時点までのピットレーン通過回数（/pit実測、セッション開始時のガレージ退出を含む）。
+            FLはセッション最速ラップ。順位はpositionフィードの実測値で、無い場合は「—」です。データ出典：OpenF1 API（api.openf1.org）
+          </p>
+        </section>
+      </main>
+
+      <section class="bottom-grid">
+        <div class="card card-pad">
+          <h2 class="card-title">Race Control</h2>
+          <div id="rcBody"></div>
+        </div>
+        <div class="card card-pad">
+          <h2 class="card-title">Weather <span class="sub">現地</span></h2>
+          <div id="wxBody"></div>
+        </div>
+      </section>
+    </div>
+
+    <script>
+    "use strict";
+    /* F1 Live Timing Web — static/PWA port of the audited implementation.
+       All data is fetched live from the free OpenF1 API, directly from the
+       browser (CORS: access-control-allow-origin *). No snapshots.
+       Fixes vs the original build are marked [FIX n]. */
+
+    // ------------------------------------------------------------------
+    // Formatting helpers
+    // ------------------------------------------------------------------
+    var ms = function (iso) { return new Date(iso).getTime(); };
+    function fmtLap(sec) {
+      if (sec === null || sec === undefined || !isFinite(sec)) return "—";
+      var m = Math.floor(sec / 60), s = sec - m * 60;
+      return m + ":" + (s.toFixed(3).length < 6 ? "0" : "") + s.toFixed(3);
+    }
+    function fmtSector(sec) {
+      if (sec === null || sec === undefined || !isFinite(sec)) return "—";
+      return sec.toFixed(3);
+    }
+    function fmtGap(v) {
+      if (v === null || v === undefined) return "—";
+      if (typeof v === "string") return v;
+      return v < 0 ? v.toFixed(3) : "+" + v.toFixed(3);
+    }
+    function fmtClock(elapsedSec) {
+      var s = Math.max(0, Math.floor(elapsedSec));
+      var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = s % 60;
+      return h + ":" + (m < 10 ? "0" : "") + m + ":" + (ss < 10 ? "0" : "") + ss;
+    }
+    function fmtLapClock(sec) {
+      var s = Math.max(0, sec), m = Math.floor(s / 60), rest = s - m * 60;
+      return m + ":" + (rest.toFixed(1).length < 4 ? "0" : "") + rest.toFixed(1);
+    }
+    var jstTime = new Intl.DateTimeFormat("ja-JP", { timeZone: "Asia/Tokyo", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+    var jstDay = new Intl.DateTimeFormat("ja-JP", { timeZone: "Asia/Tokyo", month: "numeric", day: "numeric", weekday: "short" });
+    function esc(s) {
+      return String(s === null || s === undefined ? "" : s)
+        .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+    var SECTOR_COLORS = { purple: "var(--purple)", green: "var(--green)", yellow: "var(--yellow)", none: "var(--text)" };
+    function sectorColor(k) { return SECTOR_COLORS[k] || "var(--text)"; }
+    var TYRE_STYLE = {
+      SOFT: { bg: "#e10600", fg: "#fff", label: "S" },
+      MEDIUM: { bg: "#ffd12e", fg: "#111", label: "M" },
+      HARD: { bg: "#f4f6f8", fg: "#111", label: "H" },
+      INTERMEDIATE: { bg: "#00d26a", fg: "#111", label: "I" },
+      WET: { bg: "#2f7bff", fg: "#fff", label: "W" }
+    };
+    function tyreStyle(compound) {
+      return TYRE_STYLE[compound] || { bg: "#33383f", fg: "#fff", label: "?" };
+    }
+
+    // ------------------------------------------------------------------
+    // API layer — browser-direct OpenF1 with TTL cache and [FIX 6]
+    // error separation: 404 => "empty" (no data, normal); 429 => rate
+    // limited (no retry storm, polling backs off); 5xx/network => one
+    // retry, then a real error that the UI surfaces as stale.
+    // ------------------------------------------------------------------
+    var BASE = "https://api.openf1.org/v1";
+    var apiCache = new Map();
+    var rateLimitUntil = 0;   // epoch ms; while > now, polls are stretched
+    var backoffMult = 1;      // grows on 429/5xx, decays on success
+
+    function sleep(t) { return new Promise(function (r) { setTimeout(r, t); }); }
+
+    async function fetchJson(path, ttlMs) {
+      var hit = apiCache.get(path);
+      if (hit && hit.exp > Date.now()) return { status: "ok", data: hit.data };
+      var url = BASE + path;
+      var res = null, attempt;
+      for (attempt = 0; attempt < 2; attempt++) {
+        try {
+          res = await fetch(url, { headers: { accept: "application/json" } });
+        } catch (e) {
+          res = null;
+        }
+        if (res && res.status === 404) return { status: "empty" };
+        if (res && res.status === 429) {
+          rateLimitUntil = Date.now() + 30000;
+          backoffMult = Math.min(8, backoffMult * 2);
+          return { status: "error", code: 429 };
+        }
+        if (res && res.ok) break;
+        // 5xx or network failure: exactly one retry after a pause.
+        if (attempt === 0) { await sleep(1500); res = null; continue; }
+        backoffMult = Math.min(8, backoffMult * 2);
+        return { status: "error", code: res ? res.status : 0 };
+      }
+      if (!res || !res.ok) return { status: "error", code: res ? res.status : 0 };
+      var data;
+      try { data = await res.json(); } catch (e) { return { status: "error", code: -1 }; }
+      apiCache.set(path, { exp: Date.now() + ttlMs, data: data });
+      if (apiCache.size > 400) {
+        var oldest = apiCache.keys().next().value;
+        if (oldest) apiCache.delete(oldest);
+      }
+      backoffMult = Math.max(1, backoffMult / 2);
+      return { status: "ok", data: data };
+    }
+    function windowTtl(toIso) {
+      var end = ms(toIso);
+      if (!isFinite(end)) return 120000;
+      return Date.now() - end < 90000 ? 3000 : 120000;
+    }
+    function asArray(r) {
+      if (r.status !== "ok" || !Array.isArray(r.data)) return [];
+      return r.data.filter(function (v) { return typeof v === "object" && v !== null; });
+    }
+    var num = function (v) { return typeof v === "number" && isFinite(v) ? v : null; };
+    var str = function (v) { return typeof v === "string" ? v : null; };
+    var bool = function (v) { return typeof v === "boolean" ? v : null; };
+    var numArr = function (v) {
+      return Array.isArray(v) ? v.filter(function (n) { return typeof n === "number"; }) : null;
+    };
+
+    async function apiGetSessions() {
+      var latestR = await fetchJson("/sessions?session_key=latest", 30000);
+      var latestRaw = asArray(latestR);
+      var latest = latestRaw[0];
+      if (!latest) return { sessions: [], latest_key: 0 };
+      var meetingKey = num(latest.meeting_key) || 0;
+      var meetingR = await fetchJson("/sessions?meeting_key=" + meetingKey, 30000);
+      var meetingRaw = asArray(meetingR);
+      var rows = (meetingRaw.length > 0 ? meetingRaw : latestRaw).map(function (r) {
+        return {
+          session_key: num(r.session_key) || 0,
+          session_name: str(r.session_name) || "",
+          session_type: str(r.session_type) || "",
+          date_start: str(r.date_start) || "",
+          date_end: str(r.date_end) || "",
+          meeting_key: num(r.meeting_key) || 0,
+          circuit_short_name: str(r.circuit_short_name),
+          location: str(r.location),
+          country_name: str(r.country_name),
+          year: num(r.year) || 0
+        };
+      });
+      rows.sort(function (a, b) { return a.date_start < b.date_start ? -1 : 1; });
+      return { sessions: rows, latest_key: num(latest.session_key) || 0 };
+    }
+
+    // One round of session data. Each endpoint is isolated: a 404 or a
+    // failure on one never blanks the others. `error` is true when at
+    // least one endpoint failed with a real error (429/5xx/network);
+    // `coreError` when a tower-critical endpoint (drivers/laps/position)
+    // failed — [FIX 6]. intervals is only requested for race-type
+    // sessions: OpenF1 has no intervals data for practice/qualifying
+    // (404 by design), and re-requesting it on every poll spammed the
+    // console and burned the rate-limit budget needed by real data.
+    async function apiGetSessionData(k, sinceIso) {
+      var partial = !!sinceIso;
+      var tsFilter = "", lapFilter = "";
+      if (partial) {
+        var sinceMs = ms(sinceIso);
+        tsFilter = "&date%3E=" + encodeURIComponent(new Date(sinceMs - 5000).toISOString());
+        lapFilter = "&date_start%3E=" + encodeURIComponent(new Date(sinceMs - 240000).toISOString());
+      }
+      var sessType = (typeof S !== "undefined" && S.session) ? S.session.session_type : null;
+      var wantIntervals = sessType === null || sessType === "Race";
+      var rs = await Promise.all([
+        fetchJson("/drivers?session_key=" + k, 300000),
+        fetchJson("/laps?session_key=" + k + lapFilter, 3000),
+        fetchJson("/stints?session_key=" + k, 300000),
+        fetchJson("/position?session_key=" + k + tsFilter, 3000),
+        fetchJson("/race_control?session_key=" + k + tsFilter, 5000),
+        fetchJson("/weather?session_key=" + k + tsFilter, 10000),
+        wantIntervals
+          ? fetchJson("/intervals?session_key=" + k + tsFilter, 3000)
+          : Promise.resolve({ status: "empty" }),
+        fetchJson("/pit?session_key=" + k + tsFilter, 5000)
+      ]);
+      var anyError = rs.some(function (r) { return r.status === "error"; });
+      var coreError = rs[0].status === "error" || rs[1].status === "error" || rs[3].status === "error";
+      var drivers = asArray(rs[0]).map(function (r) {
+        return {
+          driver_number: num(r.driver_number) || 0,
+          name_acronym: str(r.name_acronym) || "???",
+          full_name: str(r.full_name) || "",
+          first_name: str(r.first_name),
+          last_name: str(r.last_name),
+          team_name: str(r.team_name),
+          team_colour: str(r.team_colour)
+        };
+      });
+      var laps = asArray(rs[1]).map(function (r) {
+        return {
+          driver_number: num(r.driver_number) || 0,
+          lap_number: num(r.lap_number) || 0,
+          date_start: str(r.date_start),
+          lap_duration: num(r.lap_duration),
+          duration_sector_1: num(r.duration_sector_1),
+          duration_sector_2: num(r.duration_sector_2),
+          duration_sector_3: num(r.duration_sector_3),
+          i1_speed: num(r.i1_speed),
+          i2_speed: num(r.i2_speed),
+          st_speed: num(r.st_speed),
+          is_pit_out_lap: bool(r.is_pit_out_lap),
+          segments_sector_1: numArr(r.segments_sector_1),
+          segments_sector_2: numArr(r.segments_sector_2),
+          segments_sector_3: numArr(r.segments_sector_3)
+        };
+      });
+      var stints = asArray(rs[2]).map(function (r) {
+        return {
+          driver_number: num(r.driver_number) || 0,
+          stint_number: num(r.stint_number) || 0,
+          lap_start: num(r.lap_start) || 0,
+          lap_end: num(r.lap_end) || 0,
+          compound: str(r.compound),
+          tyre_age_at_start: num(r.tyre_age_at_start) || 0
+        };
+      });
+      var positions = asArray(rs[3]).map(function (r) {
+        return { date: str(r.date) || "", driver_number: num(r.driver_number) || 0, position: num(r.position) || 0 };
+      });
+      var race_control = asArray(rs[4]).map(function (r) {
+        return {
+          date: str(r.date) || "", message: str(r.message) || "",
+          category: str(r.category), flag: str(r.flag),
+          driver_number: num(r.driver_number), lap_number: num(r.lap_number),
+          scope: str(r.scope), sector: num(r.sector)
+        };
+      });
+      var weather = asArray(rs[5]).map(function (r) {
+        return {
+          date: str(r.date) || "",
+          air_temperature: num(r.air_temperature),
+          track_temperature: num(r.track_temperature),
+          humidity: num(r.humidity), wind_speed: num(r.wind_speed),
+          wind_direction: num(r.wind_direction), rainfall: num(r.rainfall),
+          pressure: num(r.pressure)
+        };
+      });
+      var intervals = rs[6].status !== "ok" ? null : asArray(rs[6]).map(function (r) {
+        return {
+          date: str(r.date) || "", driver_number: num(r.driver_number) || 0,
+          gap_to_leader: (typeof r.gap_to_leader === "number" || typeof r.gap_to_leader === "string") ? r.gap_to_leader : null,
+          interval: (typeof r.interval === "number" || typeof r.interval === "string") ? r.interval : null
+        };
+      });
+      var pits = asArray(rs[7]).map(function (r) {
+        return { date: str(r.date) || "", driver_number: num(r.driver_number) || 0, lap_number: num(r.lap_number) || 0 };
+      });
+      return {
+        drivers: drivers, laps: laps, stints: stints, positions: positions,
+        race_control: race_control, weather: weather, intervals: intervals,
+        pits: pits, fetched_at: new Date().toISOString(), partial: partial,
+        error: anyError, coreError: coreError
+      };
+    }
+
+    async function apiGetTrackOutline(k, d) {
+      var lapsR = await fetchJson("/laps?session_key=" + k + "&driver_number=" + d, 300000);
+      var laps = asArray(lapsR);
+      var best = null;
+      laps.forEach(function (r) {
+        var dur = num(r.lap_duration), start = str(r.date_start);
+        if (dur !== null && start && (best === null || dur < best.duration)) {
+          best = {
+            start: start, duration: dur,
+            s1: num(r.duration_sector_1), s2: num(r.duration_sector_2), s3: num(r.duration_sector_3)
+          };
+        }
+      });
+      if (!best) return { points: [], s1: null, s2: null, s3: null, duration: null, error: lapsR.status === "error" };
+      var from = new Date(best.start);
+      var to = new Date(from.getTime() + (best.duration + 4) * 1000);
+      var path = "/location?session_key=" + k + "&driver_number=" + d +
+        "&date%3E=" + encodeURIComponent(from.toISOString()) +
+        "&date%3C=" + encodeURIComponent(to.toISOString());
+      var rawR = await fetchJson(path, 600000);
+      var points = asArray(rawR)
+        .map(function (r) { return { x: num(r.x) || 0, y: num(r.y) || 0 }; })
+        .filter(function (p) { return !(p.x === 0 && p.y === 0); });
+      if (points.length > 900) {
+        var step = Math.ceil(points.length / 900);
+        points = points.filter(function (_, i) { return i % step === 0; });
+      }
+      // `error` separates "the fetch failed" from "this session genuinely
+      // has no location data" — the caller must not cache a failure as a
+      // permanent empty outline.
+      return { points: points, s1: best.s1, s2: best.s2, s3: best.s3, duration: best.duration, error: rawR.status === "error" };
+    }
+
+    async function apiGetLocations(k, fromIso, toIso) {
+      var path = "/location?session_key=" + k +
+        "&date%3E=" + encodeURIComponent(fromIso) +
+        "&date%3C=" + encodeURIComponent(toIso);
+      var r = await fetchJson(path, windowTtl(toIso));
+      return {
+        points: asArray(r).map(function (p) {
+          return { date: str(p.date) || "", driver_number: num(p.driver_number) || 0, x: num(p.x) || 0, y: num(p.y) || 0 };
+        }),
+        error: r.status === "error"
+      };
+    }
+
+    async function apiGetCarData(k, d, fromIso, toIso) {
+      var path = "/car_data?session_key=" + k + "&driver_number=" + d +
+        "&date%3E=" + encodeURIComponent(fromIso) +
+        "&date%3C=" + encodeURIComponent(toIso);
+      var r = await fetchJson(path, windowTtl(toIso));
+      return {
+        points: asArray(r).map(function (p) {
+          return {
+            date: str(p.date) || "", speed: num(p.speed) || 0,
+            throttle: num(p.throttle) || 0, brake: num(p.brake) || 0,
+            rpm: num(p.rpm) || 0, n_gear: num(p.n_gear) || 0, drs: num(p.drs)
+          };
+        }),
+        error: r.status === "error"
+      };
+    }
+
+    // Differential merge for LIVE polling (ported): rows newer than the
+    // watermark are merged in, keyed so overlaps dedupe and an updated
+    // row (a lap that has since completed) replaces its earlier copy.
+    function mergeSessionData(prev, next) {
+      if (!next.partial) return next;
+      function mergeBy(a, b, key) {
+        var m = new Map();
+        a.forEach(function (v) { m.set(key(v), v); });
+        b.forEach(function (v) { m.set(key(v), v); });
+        return Array.from(m.values());
+      }
+      return {
+        drivers: next.drivers.length > 0 ? next.drivers : prev.drivers,
+        stints: next.stints.length > 0 ? next.stints : prev.stints,
+        laps: mergeBy(prev.laps, next.laps, function (l) { return l.driver_number + ":" + l.lap_number; }),
+        positions: mergeBy(prev.positions, next.positions, function (p) { return p.driver_number + ":" + p.date; }),
+        race_control: mergeBy(prev.race_control, next.race_control, function (r) { return r.date + ":" + r.message; }),
+        weather: mergeBy(prev.weather, next.weather, function (w) { return w.date; }),
+        intervals: (prev.intervals === null && next.intervals === null) ? null :
+          mergeBy(prev.intervals || [], next.intervals || [], function (iv) { return iv.driver_number + ":" + iv.date; }),
+        pits: mergeBy(prev.pits || [], next.pits || [], function (p) { return p.driver_number + ":" + p.date; }),
+        fetched_at: next.fetched_at, partial: false, error: next.error
+      };
+    }
+
+    // ------------------------------------------------------------------
+    // Position interpolation (interpolate only, never extrapolate)
+    // ------------------------------------------------------------------
+    function sampleAt(pts, atMs) {
+      if (!pts || pts.length === 0) return null;
+      var lo = 0, hi = pts.length - 1, idx = -1;
+      while (lo <= hi) {
+        var mid = (lo + hi) >> 1, p = pts[mid];
+        if (!p) break;
+        if (p.t <= atMs) { idx = mid; lo = mid + 1; } else { hi = mid - 1; }
+      }
+      if (idx < 0) return null;
+      var a = pts[idx];
+      if (!a) return null;
+      if (atMs - a.t > 45000) return null; // stale: car is in the garage
+      var b = pts[idx + 1];
+      if (!b || b.t === a.t) return { x: a.x, y: a.y };
+      var f = (atMs - a.t) / (b.t - a.t);
+      return { x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f };
+    }
+
+    // Corner detection for turn labels: sustained sharp heading changes
+    // along the outline trace. [FIX 3] These numbers are an approximation
+    // and the map caption says so.
+    function detectCorners(pts) {
+      var n = pts.length;
+      if (n < 60) return [];
+      var K = Math.max(3, Math.floor(n / 120));
+      function heading(i) {
+        var a = pts[(i - K + n) % n], b = pts[(i + K) % n];
+        if (!a || !b) return 0;
+        return Math.atan2(b.y - a.y, b.x - a.x);
+      }
+      var curve = new Array(n).fill(0), i, j;
+      for (i = 0; i < n; i++) {
+        var d = heading(i + K) - heading(i - K);
+        while (d > Math.PI) d -= 2 * Math.PI;
+        while (d < -Math.PI) d += 2 * Math.PI;
+        curve[i] = Math.abs(d);
+      }
+      var sm = curve.map(function (_, i2) {
+        var s = 0;
+        for (j = -4; j <= 4; j++) s += curve[(i2 + j + n) % n] || 0;
+        return s / 9;
+      });
+      var minSep = Math.floor(n / 22), peaks = [];
+      for (i = 0; i < n; i++) {
+        var v = sm[i] || 0;
+        if (v < 0.3) continue;
+        var isMax = true;
+        for (j = -minSep; j <= minSep; j++) {
+          if ((sm[(i + j + n) % n] || 0) > v + 1e-9) { isMax = false; break; }
+        }
+        if (isMax) peaks.push({ idx: i, v: v });
+      }
+      peaks.sort(function (a, b) { return a.idx - b.idx; });
+      return peaks.slice(0, 20).map(function (p) { return pts[p.idx]; })
+        .filter(Boolean).map(function (p) { return { x: p.x, y: p.y }; });
+    }
+
+    // ------------------------------------------------------------------
+    // App state
+    // ------------------------------------------------------------------
+    var S = {
+      sessions: [], latestKey: 0, sessionKey: null, session: null,
+      data: null, dataError: false,
+      selected: 16, focusLapNum: null,
+      playing: false, speed: 8, ready: false, // [FIX 5] no autoplay pre-ready
+      cursorRef: 0,          // absolute epoch ms, advanced per frame
+      elapsed: 0,            // seconds from session start, 5Hz state
+      nowMs: Date.now(),
+      outline: [], outlineFracs: null, bounds: null, outlineKey: "",
+      locCache: new Map(), locInflight: new Set(), locByDriver: new Map(),
+      locFetching: false, locError: false, locFailAt: new Map(),
+      carKey: "", carPoints: [], carFetchedAt: 0, carInflight: false, carSeq: 0,
+      outlineInflight: false, outlineError: false, outlineLastTry: 0,
+      errRetryAt: 0,
+      sessTimer: 0, dataTimer: 0
+    };
+    var $ = function (id) { return document.getElementById(id); };
+
+    function sessionStartMs() { return S.session ? ms(S.session.date_start) : 0; }
+    function sessionEndMs() { return S.session ? ms(S.session.date_end) : 0; }
+
+    // Effective session end: the scheduled date_end is NOT when the data
+    // stops (Austin FP2: Leclerc's laps 28-30 start after 22:00 UTC).
+    // The replay window extends to the newest timestamp in the data.
+    function dataEndMs() {
+      if (!S.data) return 0;
+      var m = 0, i, l;
+      for (i = 0; i < S.data.laps.length; i++) {
+        l = S.data.laps[i];
+        if (l.date_start !== null) m = Math.max(m, ms(l.date_start) + (l.lap_duration || 0) * 1000);
+      }
+      S.data.positions.forEach(function (p) { m = Math.max(m, ms(p.date)); });
+      S.data.race_control.forEach(function (r) { m = Math.max(m, ms(r.date)); });
+      S.data.weather.forEach(function (w) { m = Math.max(m, ms(w.date)); });
+      if (S.data.intervals) S.data.intervals.forEach(function (iv) { m = Math.max(m, ms(iv.date)); });
+      return m;
+    }
+    function effEndMs() { return Math.max(sessionEndMs(), dataEndMs()); }
+    function durationSec() { return Math.max(1, (effEndMs() - sessionStartMs()) / 1000); }
+    function isUpcoming() { return !!S.session && S.nowMs < sessionStartMs(); }
+    function computeLive() {
+      if (!S.session || isUpcoming()) return false;
+      var de = dataEndMs(), en = sessionEndMs();
+      return S.nowMs >= sessionStartMs() &&
+        (S.nowMs <= en || (de > en && S.nowMs <= de + 300000));
+    }
+    // [FIX 2] freshness = newest timestamp of the data actually on
+    // screen, not the fetch time.
+    function newestDataMs() {
+      if (!S.data) return 0;
+      var m = dataEndMs();
+      S.data.pits.forEach(function (p) { m = Math.max(m, ms(p.date)); });
+      return m;
+    }
+
+    // ------------------------------------------------------------------
+    // Per-data precomputation (rebuilt only when the data object changes)
+    // ------------------------------------------------------------------
+    var model = null; // { lapsByDriver, effStartByLap, lapKinds, positionsSorted, intervalsSorted }
+    function buildModel(data) {
+      var lapsByDriver = new Map();
+      data.laps.forEach(function (l) {
+        var arr = lapsByDriver.get(l.driver_number) || [];
+        arr.push(l); lapsByDriver.set(l.driver_number, arr);
+      });
+      lapsByDriver.forEach(function (arr) {
+        arr.sort(function (a, b) { return a.lap_number - b.lap_number; });
+      });
+      // Pit-out correction: effective start = min(recorded start,
+      // previous lap's effective start + its duration). OpenF1 stamps a
+      // pit-out lap's date_start at pit-exit while its lap_duration is
+      // timed from the previous line crossing (garage time included);
+      // without this, completion lands up to ~842s late (FP2: 62 laps).
+      // Verified: Hamilton FP2 Lap 8 completes at 1468.9s, not 1824s.
+      var effStartByLap = new Map();
+      lapsByDriver.forEach(function (arr, drv) {
+        var prevEff = null, prevDur = null, prevNum = null;
+        arr.forEach(function (l) {
+          var raw = l.date_start !== null ? ms(l.date_start) : null;
+          var eff = raw;
+          if (raw !== null && prevEff !== null && prevDur !== null &&
+              prevNum !== null && prevNum === l.lap_number - 1) {
+            eff = Math.min(raw, prevEff + prevDur * 1000);
+          }
+          effStartByLap.set(drv + ":" + l.lap_number, eff);
+          prevEff = eff; prevDur = l.lap_duration; prevNum = l.lap_number;
+        });
+      });
+      var m = {
+        lapsByDriver: lapsByDriver,
+        effStartByLap: effStartByLap,
+        positionsSorted: data.positions.slice().sort(function (a, b) { return a.date < b.date ? -1 : 1; }),
+        intervalsSorted: data.intervals ? data.intervals.slice().sort(function (a, b) { return a.date < b.date ? -1 : 1; }) : null,
+        lapKinds: null
+      };
+      m.effStartOf = function (l) {
+        var v = effStartByLap.get(l.driver_number + ":" + l.lap_number);
+        return v === undefined ? null : v;
+      };
+      m.effEndOf = function (l) {
+        var s = m.effStartOf(l);
+        if (s !== null && l.lap_duration !== null) return s + l.lap_duration * 1000;
+        var arr = lapsByDriver.get(l.driver_number) || [];
+        var idx = -1, i;
+        for (i = 0; i < arr.length; i++) if (arr[i].lap_number === l.lap_number) { idx = i; break; }
+        var nxt = idx >= 0 ? arr[idx + 1] : undefined;
+        if (nxt) {
+          var ns = m.effStartOf(nxt);
+          if (ns !== null) return ns;
+          if (nxt.date_start !== null) return ms(nxt.date_start);
+        }
+        return null;
+      };
+      // Sector end times: forward when S1 exists; otherwise (67 FP2 laps
+      // have S1=null but S2/S3 present) back-computed from the lap end so
+      // S2/S3 still reveal at the right instant. The S1 value stays "—".
+      m.sectorEndsOf = function (l) {
+        var ends = [null, null, null];
+        var start = m.effStartOf(l), end = m.effEndOf(l);
+        var s1 = l.duration_sector_1, s2 = l.duration_sector_2, s3 = l.duration_sector_3;
+        if (start !== null && s1 !== null) {
+          var s1End = start + s1 * 1000;
+          ends[0] = s1End;
+          if (s2 !== null) ends[1] = s1End + s2 * 1000;
+        }
+        if (end !== null) {
+          ends[2] = end;
+          if (s3 !== null) {
+            var s2End = end - s3 * 1000;
+            if (ends[1] === null && s2 !== null) ends[1] = s2End;
+            if (ends[0] === null && s2 !== null) ends[0] = s2End - s2 * 1000;
+          }
+        }
+        if (ends[1] === null && ends[0] !== null && s2 !== null) ends[1] = ends[0] + s2 * 1000;
+        return ends;
+      };
+      // Sector colours judged AT THE MOMENT EACH SECTOR IS CROSSED:
+      // walk every sector-crossing event in order and colour against the
+      // overall/personal bests as they stood at that instant (strict < —
+      // an exact tie is not purple/green). A faster sector set later can
+      // never recolour an earlier one.
+      var events = [];
+      data.laps.forEach(function (l) {
+        if (m.effStartOf(l) === null) return;
+        var secs = [l.duration_sector_1, l.duration_sector_2, l.duration_sector_3];
+        var ends = m.sectorEndsOf(l);
+        for (var i = 0; i < 3; i++) {
+          if (secs[i] !== null && ends[i] !== null && ends[i] !== undefined) {
+            events.push({ key: l.driver_number + ":" + l.lap_number, driver: l.driver_number, idx: i, value: secs[i], end: ends[i] });
+          }
+        }
+      });
+      events.sort(function (a, b) { return a.end - b.end; });
+      var overall = [null, null, null], personal = new Map(), kinds = new Map();
+      events.forEach(function (ev) {
+        var pb = personal.get(ev.driver) || [null, null, null];
+        var ob = overall[ev.idx], p = pb[ev.idx], kind;
+        if (ob === null || ev.value < ob - 1e-9) kind = "purple";
+        else if (p === null || ev.value < p - 1e-9) kind = "green";
+        else kind = "yellow";
+        if (ob === null || ev.value < ob) overall[ev.idx] = ev.value;
+        if (p === null || ev.value < p) pb[ev.idx] = ev.value;
+        personal.set(ev.driver, pb);
+        var k = kinds.get(ev.key) || ["none", "none", "none"];
+        k[ev.idx] = kind;
+        kinds.set(ev.key, k);
+      });
+      m.lapKinds = kinds;
+      return m;
+    }
+    function ensureModel() {
+      if (!S.data) { model = null; return null; }
+      if (!model || model.dataRef !== S.data) {
+        model = buildModel(S.data);
+        model.dataRef = S.data;
+      }
+      return model;
+    }
+    function completedAt(m, l, cursorMs) {
+      var s = m.effStartOf(l);
+      return s !== null && l.lap_duration !== null && isFinite(l.lap_duration) &&
+        s + l.lap_duration * 1000 <= cursorMs + 1;
+    }
+    // The sectors of one lap revealed at an instant: each sector is
+    // gated by its OWN end time (forward or back-computed), so sectors
+    // appear one by one in crossing order, never all at lap completion.
+    function revealedSectors(m, l, atMs) {
+      var values = [null, null, null], ends = [null, null, null];
+      if (!l || m.effStartOf(l) === null) return { values: values, ends: ends };
+      var secs = [l.duration_sector_1, l.duration_sector_2, l.duration_sector_3];
+      var allEnds = m.sectorEndsOf(l);
+      for (var i = 0; i < 3; i++) {
+        ends[i] = allEnds[i] !== undefined ? allEnds[i] : null;
+        if (secs[i] !== null && allEnds[i] !== null && allEnds[i] !== undefined && allEnds[i] <= atMs + 1) {
+          values[i] = secs[i];
+        }
+      }
+      return { values: values, ends: ends };
+    }
+    function bestsAtCursor(m, data, cursorMs) {
+      var overall = [null, null, null], personal = new Map();
+      data.drivers.forEach(function (d) { personal.set(d.driver_number, [null, null, null]); });
+      data.laps.forEach(function (l) {
+        if (!completedAt(m, l, cursorMs)) return;
+        var secs = [l.duration_sector_1, l.duration_sector_2, l.duration_sector_3];
+        secs.forEach(function (s, i) {
+          if (s === null) return;
+          if (overall[i] === null || s < overall[i]) overall[i] = s;
+          var pb = personal.get(l.driver_number);
+          if (pb && (pb[i] === null || s < pb[i])) pb[i] = s;
+        });
+      });
+      return { overall: overall, personal: personal };
+    }
+
+    // Tower rows at the cursor. [FIX 1] a driver with no position-feed
+    // entry keeps position=null and renders "—" — never a made-up
+    // sequential number.
+    function computeRows(m, data, cursorMs) {
+      var posAt = new Map(), i, p;
+      for (i = 0; i < m.positionsSorted.length; i++) {
+        p = m.positionsSorted[i];
+        if (ms(p.date) <= cursorMs) posAt.set(p.driver_number, p.position);
+        else break;
+      }
+      var intAt = new Map();
+      if (m.intervalsSorted) {
+        for (i = 0; i < m.intervalsSorted.length; i++) {
+          var iv = m.intervalsSorted[i];
+          if (ms(iv.date) <= cursorMs) intAt.set(iv.driver_number, { gap: iv.gap_to_leader, int: iv.interval });
+          else break;
+        }
+      }
+      var out = data.drivers.map(function (driver) {
+        var laps = m.lapsByDriver.get(driver.driver_number) || [];
+        var done = laps.filter(function (l) { return completedAt(m, l, cursorMs); });
+        var lastLap = done.length > 0 ? done[done.length - 1] : null;
+        var bestLap = null;
+        done.forEach(function (l) {
+          if (l.lap_duration !== null && (bestLap === null || l.lap_duration < bestLap)) bestLap = l.lap_duration;
+        });
+        var started = laps.filter(function (l) { return l.date_start !== null && ms(l.date_start) <= cursorMs; });
+        var currentLapNum = started.length > 0 ? started[started.length - 1].lap_number : 0;
+        // GAS Lap 1 edge: first car out has date_start=null on Lap 1;
+        // the /pit exit proves the lap began. Display-only fallback —
+        // age/completion counting still uses raw-started laps.
+        if (currentLapNum === 0) {
+          var ghost = null;
+          laps.forEach(function (l) {
+            if (l.date_start === null && (data.pits || []).some(function (pp) {
+              return pp.driver_number === driver.driver_number && pp.lap_number === l.lap_number && ms(pp.date) <= cursorMs;
+            })) ghost = l;
+          });
+          if (ghost) currentLapNum = ghost.lap_number;
+        }
+        var current = null;
+        laps.forEach(function (l) { if (l.lap_number === currentLapNum) current = l; });
+        var kinds = lastLap ? (m.lapKinds.get(driver.driver_number + ":" + lastLap.lap_number) || ["none", "none", "none"]) : ["none", "none", "none"];
+        var currentFinished = current !== null && completedAt(m, current, cursorMs);
+        var revealed = currentFinished
+          ? { values: [null, null, null], ends: [null, null, null] }
+          : revealedSectors(m, current, cursorMs);
+        var curSectorKinds = current
+          ? (m.lapKinds.get(driver.driver_number + ":" + current.lap_number) || ["none", "none", "none"])
+          : ["none", "none", "none"];
+        var stints = (data.stints || []).filter(function (s) { return s.driver_number === driver.driver_number; });
+        var startedStints = stints.filter(function (s) { return s.lap_start <= currentLapNum; });
+        var stint = null;
+        stints.forEach(function (s) { if (currentLapNum >= s.lap_start && currentLapNum <= s.lap_end) stint = s; });
+        if (!stint && startedStints.length > 0) stint = startedStints[startedStints.length - 1];
+        var startedNums = new Set(started.map(function (x) { return x.lap_number; }));
+        function isFinished(x) {
+          if (completedAt(m, x, cursorMs)) return true;
+          var later = false;
+          startedNums.forEach(function (n) { if (n > x.lap_number) later = true; });
+          return later;
+        }
+        var tyreAge = null;
+        if (stint) {
+          var used = laps.filter(function (x) {
+            return startedNums.has(x.lap_number) && x.lap_number >= stint.lap_start &&
+              x.lap_number <= stint.lap_end && isFinished(x);
+          }).length;
+          tyreAge = stint.tyre_age_at_start + used;
+        }
+        var pitCount = (data.pits || []).filter(function (pp) {
+          return pp.driver_number === driver.driver_number && ms(pp.date) <= cursorMs;
+        }).length;
+        var stops = (data.pits || []).length > 0 ? pitCount : Math.max(0, startedStints.length - 1);
+        return {
+          driver: driver,
+          position: posAt.has(driver.driver_number) ? posAt.get(driver.driver_number) : null,
+          bestLap: bestLap, lastLap: lastLap, sectorKinds: kinds,
+          curSectors: revealed.values, curSectorKinds: curSectorKinds,
+          curSectorEnds: revealed.ends,
+          gap: null, interval: null, currentLapNum: currentLapNum,
+          stint: stint, tyreAge: tyreAge,
+          pitOut: current !== null && current !== undefined ? current.is_pit_out_lap === true : false,
+          stops: stops
+        };
+      });
+      out.sort(function (a, b) {
+        if (a.position !== null && b.position !== null) return a.position - b.position;
+        if (a.position !== null) return -1;
+        if (b.position !== null) return 1;
+        return (a.bestLap === null ? Infinity : a.bestLap) - (b.bestLap === null ? Infinity : b.bestLap);
+      });
+      // GAP is measured against the SESSION best at the cursor, not
+      // against whichever car the position feed lists first.
+      var leaderBest = null;
+      out.forEach(function (r) {
+        if (r.bestLap !== null && (leaderBest === null || r.bestLap < leaderBest)) leaderBest = r.bestLap;
+      });
+      out.forEach(function (r, idx) {
+        var ivv = intAt.get(r.driver.driver_number);
+        if (ivv) { r.gap = ivv.gap; r.interval = ivv.int; return; }
+        if (r.bestLap !== null && leaderBest !== null && r.bestLap > leaderBest) {
+          r.gap = r.bestLap - leaderBest;
+        }
+        var ahead = idx > 0 ? out[idx - 1] : null;
+        if (ahead && r.bestLap !== null && ahead.bestLap !== null && r.bestLap > ahead.bestLap) {
+          r.interval = r.bestLap - ahead.bestLap;
+        }
+        // [FIX 1] position is never filled in from the sort order.
+      });
+      return out;
+    }
+
+    // ------------------------------------------------------------------
+    // Track map. Built once per outline; car groups are positioned per
+    // animation frame. [FIX 3] sector boundaries come from the outline
+    // lap's real sector-time fractions; corner numbers and the pit lane
+    // are approximations and the caption says so.
+    // ------------------------------------------------------------------
+    var mapGeo = null;   // { viewBox, geoSvg }
+    var carEls = new Map();
+    function buildMap() {
+      var wrap = $("mapWrap");
+      carEls = new Map();
+      mapGeo = null;
+      if (!S.bounds || S.outline.length <= 10) {
+        wrap.innerHTML = '<p class="empty-msg">' +
+          (S.session && isUpcoming() ? "このセッションは開始前です" :
+           S.outlineInflight || !S.data ? "トラックデータを読み込み中…" :
+           S.outlineError ? "位置データを取得できませんでした（通信エラー）。自動で再試行します" :
+           "このセッションの位置データはまだありません") + "</p>";
+        return;
+      }
+      var b = S.bounds, outline = S.outline;
+      var w = b.maxX - b.minX, hgt = b.maxY - b.minY;
+      var flipY = function (y) { return b.maxY - (y - b.minY); };
+      var roadW = w / 40, edgeW = w / 26;
+      var n = outline.length;
+      var P = outline.map(function (p) { return { x: p.x, y: flipY(p.y) }; });
+      var closed = P.concat([P[0]]);
+      function line(arr) { return arr.map(function (p) { return p.x + "," + p.y; }).join(" "); }
+      var cum = [0], i;
+      for (i = 1; i < n; i++) {
+        cum[i] = (cum[i - 1] || 0) + Math.hypot(outline[i].x - outline[i - 1].x, outline[i].y - outline[i - 1].y);
+      }
+      var total = cum[n - 1] || 0;
+      function idxAt(frac) {
+        var target = total * frac, idx = 0;
+        while (idx < n - 1 && (cum[idx] || 0) < target) idx++;
+        return idx;
+      }
+      // [FIX 3] boundary fractions from real sector times of the
+      // outline lap (fall back to thirds only if the data lacks them).
+      var f1 = 1 / 3, f2 = 2 / 3;
+      if (S.outlineFracs && S.outlineFracs.s1 !== null && S.outlineFracs.s2 !== null && S.outlineFracs.s3 !== null) {
+        var tot = S.outlineFracs.s1 + S.outlineFracs.s2 + S.outlineFracs.s3;
+        if (tot > 0) { f1 = S.outlineFracs.s1 / tot; f2 = (S.outlineFracs.s1 + S.outlineFracs.s2) / tot; }
+      }
+      var i1 = idxAt(f1), i2 = idxAt(f2);
+      var sectorLines = [
+        line(closed.slice(0, i1 + 1)),
+        line(closed.slice(i1, i2 + 1)),
+        line(closed.slice(i2))
+      ];
+      function dirAt(idx) {
+        var a = P[Math.max(0, idx - 3)], c = P[Math.min(n - 1, idx + 3)];
+        if (!a || !c) return { dx: 1, dy: 0 };
+        var len = Math.hypot(c.x - a.x, c.y - a.y) || 1;
+        return { dx: (c.x - a.x) / len, dy: (c.y - a.y) / len };
+      }
+      function tickAt(idx, half) {
+        var p = P[idx];
+        if (!p) return null;
+        var d = dirAt(idx);
+        return { x1: p.x - d.dy * half, y1: p.y + d.dx * half, x2: p.x + d.dy * half, y2: p.y - d.dx * half };
+      }
+      var cx = 0, cy = 0;
+      P.forEach(function (p) { cx += p.x; cy += p.y; });
+      cx /= n; cy /= n;
+      var pitEnd = idxAt(0.055), pitPts = [];
+      for (i = 0; i <= pitEnd; i++) {
+        var pp = P[i];
+        if (!pp) continue;
+        var dd = dirAt(i);
+        var nx = -dd.dy, ny = dd.dx;
+        if (nx * (cx - pp.x) + ny * (cy - pp.y) < 0) { nx = -nx; ny = -ny; }
+        pitPts.push({ x: pp.x + nx * roadW * 1.15, y: pp.y + ny * roadW * 1.15 });
+      }
+      var corners = detectCorners(outline).map(function (c) {
+        var fy = flipY(c.y);
+        var ox = c.x - cx, oy = fy - cy, len = Math.hypot(ox, oy) || 1;
+        return { x: c.x + (ox / len) * w * 0.038, y: fy + (oy / len) * w * 0.038 };
+      });
+      var sectorStroke = ["#d7dde5", "#8f9aab", "#5b6675"];
+      var svg = "";
+      if (pitPts.length > 3) {
+        svg += '<polyline points="' + line(pitPts) + '" fill="none" stroke="#3d434c" stroke-width="' + (roadW * 0.42) + '" stroke-linejoin="round" stroke-linecap="round"/>';
+      }
+      svg += '<polyline points="' + line(closed) + '" fill="none" stroke="#dfe5ec" stroke-width="' + edgeW + '" stroke-linejoin="round" stroke-linecap="round"/>';
+      svg += '<polyline points="' + line(closed) + '" fill="none" stroke="#22252b" stroke-width="' + roadW + '" stroke-linejoin="round" stroke-linecap="round"/>';
+      sectorLines.forEach(function (pts, si) {
+        svg += '<polyline points="' + pts + '" fill="none" stroke="' + sectorStroke[si] + '" stroke-width="' + (w / 340) + '" stroke-linejoin="round" stroke-linecap="round" opacity="0.55"/>';
+      });
+      [tickAt(i1, roadW * 0.72), tickAt(i2, roadW * 0.72)].forEach(function (t) {
+        if (t) svg += '<line x1="' + t.x1 + '" y1="' + t.y1 + '" x2="' + t.x2 + '" y2="' + t.y2 + '" stroke="#f4f6f8" stroke-width="' + (w / 300) + '"/>';
+      });
+      var sf = tickAt(0, roadW * 0.72);
+      if (sf) {
+        svg += '<line x1="' + sf.x1 + '" y1="' + sf.y1 + '" x2="' + sf.x2 + '" y2="' + sf.y2 + '" stroke="#f4f6f8" stroke-width="' + (w / 130) + '"/>';
+        svg += '<line x1="' + sf.x1 + '" y1="' + sf.y1 + '" x2="' + sf.x2 + '" y2="' + sf.y2 + '" stroke="#050607" stroke-width="' + (w / 130) + '" stroke-dasharray="' + (w / 260) + " " + (w / 260) + '"/>';
+      }
+      corners.forEach(function (c, ci) {
+        svg += '<text x="' + c.x + '" y="' + c.y + '" text-anchor="middle" dominant-baseline="middle" font-size="' + (w / 78) + '" font-weight="700" fill="#79828e" font-family="ui-monospace, monospace">' + (ci + 1) + "</text>";
+      });
+      svg += '<g id="carLayer"></g>';
+      wrap.innerHTML = '<svg viewBox="' + b.minX + " " + b.minY + " " + w + " " + hgt +
+        '" role="img" aria-label="' + esc(S.session ? (S.session.circuit_short_name || "サーキット") : "") +
+        'のトラックマップ。全車の現在位置を表示">' + svg + "</svg>";
+      mapGeo = { w: w };
+      // Car groups, one per driver.
+      var layer = wrap.querySelector("#carLayer");
+      var drivers = S.data ? S.data.drivers : [];
+      drivers.forEach(function (d) {
+        var g = document.createElementNS("http://www.w3.org/2000/svg", "g");
+        g.setAttribute("data-select-driver", String(d.driver_number));
+        g.style.cursor = "pointer";
+        g.style.display = "none";
+        var isSel = d.driver_number === S.selected;
+        var rad = w / (isSel ? 32 : 44);
+        g.innerHTML =
+          '<circle class="ring" r="' + (rad * 1.55) + '" fill="none" stroke="#fff" stroke-width="' + (rad / 4.5) + '" style="display:' + (isSel ? "" : "none") + '"/>' +
+          '<circle class="dot" r="' + rad + '" fill="#' + esc(d.team_colour || "888888") + '" stroke="#050607" stroke-width="' + (rad / 4) + '"/>' +
+          '<text class="acr" y="' + (-rad * (isSel ? 1.95 : 1.45)) + '" text-anchor="middle" font-size="' + (rad * 1.02) +
+          '" font-weight="800" fill="#f4f6f8" stroke="#050607" stroke-width="' + (rad / 5) +
+          '" paint-order="stroke" font-family="ui-monospace, monospace">' + esc(d.name_acronym) + "</text>";
+        layer.appendChild(g);
+        carEls.set(d.driver_number, g);
+      });
+    }
+    function updateMapCars() {
+      if (!mapGeo || !S.bounds) return;
+      var b = S.bounds;
+      var flipY = function (y) { return b.maxY - (y - b.minY); };
+      var atMs = S.cursorRef;
+      carEls.forEach(function (g, drvNum) {
+        var pos = sampleAt(S.locByDriver.get(drvNum), atMs);
+        if (!pos) { g.style.display = "none"; return; }
+        g.style.display = "";
+        g.setAttribute("transform", "translate(" + pos.x + "," + flipY(pos.y) + ")");
+      });
+    }
+    function refreshMapSelection() {
+      if (!mapGeo) return;
+      // Radii depend on selection; rebuild is cheap and happens on click.
+      buildMap();
+      updateMapCars();
+    }
+
+    // ------------------------------------------------------------------
+    // Telemetry mini chart (SVG path built per 5Hz tick)
+    // ------------------------------------------------------------------
+    function chartSvg(points, pick, color, fromMs, toMs, cursorMs, max, fill) {
+      var W = 320, H = 56;
+      var line = "", area = "", cur = null, i, p;
+      for (i = 0; i < points.length; i++) {
+        p = points[i];
+        if (ms(p.date) <= cursorMs) cur = pick(p); else break;
+      }
+      if (points.length >= 2 && toMs > fromMs) {
+        var inDomain = points.filter(function (pt) {
+          var t = ms(pt.date);
+          return t >= fromMs - 500 && t <= toMs + 250;
+        });
+        if (inDomain.length >= 2) {
+          var pts = inDomain.map(function (pt) {
+            var x = ((ms(pt.date) - fromMs) / (toMs - fromMs)) * W;
+            var y = H - 4 - (Math.min(pick(pt), max) / max) * (H - 10);
+            return [x, y];
+          });
+          line = pts.map(function (q, qi) { return (qi === 0 ? "M" : "L") + q[0].toFixed(1) + "," + q[1].toFixed(1); }).join(" ");
+          if (fill) {
+            area = line + " L" + pts[pts.length - 1][0].toFixed(1) + "," + H + " L" + pts[0][0].toFixed(1) + "," + H + " Z";
+          }
+        }
+      }
+      var playX = toMs > fromMs ? ((cursorMs - fromMs) / (toMs - fromMs)) * W : -1;
+      var s = '<svg class="chart-svg" viewBox="0 0 ' + W + " " + H + '" preserveAspectRatio="none" aria-hidden="true">' +
+        '<rect x="0" y="0" width="' + W + '" height="' + H + '" fill="var(--surface2)" rx="3"/>';
+      if (area) s += '<path d="' + area + '" fill="' + color + '" opacity="0.22" stroke="none"/>';
+      if (line) s += '<path d="' + line + '" fill="none" stroke="' + color + '" stroke-width="1.6"/>';
+      if (playX >= 0 && playX <= W) s += '<line x1="' + playX + '" y1="0" x2="' + playX + '" y2="' + H + '" stroke="#fff" stroke-opacity="0.55" stroke-width="1"/>';
+      s += "</svg>";
+      return { svg: s, current: cur };
+    }
+
+    // ------------------------------------------------------------------
+    // Render (5Hz). Everything derives from (data, cursorMs) so tower,
+    // detail, map overlay, race control and weather can never disagree.
+    // ------------------------------------------------------------------
+    var lastHistoryScroll = 0;
+    function render() {
+      var session = S.session;
+      if (!session) return;
+      var live = computeLive();
+      var upcoming = isUpcoming();
+      var startMs = sessionStartMs();
+      var cursorMs = startMs + S.elapsed * 1000;
+      var dur = durationSec();
+      var m = ensureModel();
+      var data = S.data;
+
+      // header
+      $("sessionTitle").innerHTML = esc(session.location || "") +
+        ' <span class="sep">/</span> ' + esc(session.session_name || "");
+      $("liveBadge").innerHTML = upcoming ? "" :
+        live ? '<span class="live-badge"><span class="live-dot"></span>LIVE</span>'
+             : '<span class="replay-badge">REPLAY</span>';
+      $("sessionDate").textContent = jstDay.format(ms(session.date_start)) + " " + jstTime.format(ms(session.date_start)) + " JST";
+      $("remainLabel").textContent = live ? "Session Time Remaining" : "Time Remaining";
+      $("remainClock").textContent = fmtClock(Math.max(0, dur - S.elapsed));
+      $("cursorClock").textContent = jstTime.format(cursorMs) + " JST";
+      $("elapsedInfo").textContent = "経過 " + fmtClock(S.elapsed) + " / " + fmtClock(dur);
+      $("remainSm").textContent = "残り " + fmtClock(Math.max(0, dur - S.elapsed));
+      var seek = $("seek");
+      seek.max = String(Math.floor(dur));
+      if (document.activeElement !== seek) seek.value = String(Math.floor(S.elapsed));
+      $("transportControls").style.visibility = (live || upcoming) ? "hidden" : "visible";
+      $("playBtn").innerHTML = S.playing ? "❚❚ 停止" : "▶ 再生";
+      $("playBtn").setAttribute("aria-label", S.playing ? "一時停止" : "再生");
+      Array.prototype.forEach.call($("speedGroup").children, function (btn) {
+        btn.classList.toggle("on", Number(btn.getAttribute("data-speed")) === S.speed);
+      });
+      $("circuitName").textContent = session.circuit_short_name || "";
+
+      // [FIX 2] freshness from the newest data timestamp on screen.
+      var nd = newestDataMs();
+      var lagSec = nd > 0 ? Math.max(0, (S.nowMs - nd) / 1000) : null;
+      var stale = live && (S.dataError || (lagSec !== null && lagSec > 20));
+      var fi = $("freshInfo");
+      if (data && nd > 0) {
+        fi.textContent = "データ " + jstTime.format(nd) + " JST" +
+          (live && lagSec !== null ? " ・ 遅延 " + lagSec.toFixed(0) + "秒" : "") +
+          (stale ? " ・ 更新が遅れています" : "");
+        fi.classList.toggle("stale", stale);
+        fi.title = "表示中データの最新タイムスタンプと現在時刻の差";
+      } else { fi.textContent = ""; fi.classList.remove("stale"); }
+
+      var staleBanner = $("staleBanner");
+      if (S.dataError && data) {
+        staleBanner.textContent = "⚠ データの更新に失敗しました（通信障害またはレート制限）。表示は前回取得した時点のものです（データ時刻 " +
+          (nd > 0 ? jstTime.format(nd) : "—") + " JST）。";
+        staleBanner.classList.remove("hidden");
+      } else staleBanner.classList.add("hidden");
+
+      // [FIX 6] future session: explicit not-started state, no playback.
+      var upBanner = $("upcomingBanner");
+      if (upcoming) {
+        upBanner.textContent = "このセッションは開始前です。開始予定：" +
+          jstDay.format(startMs) + " " + jstTime.format(startMs) + " JST（データはまだありません）";
+        upBanner.classList.remove("hidden");
+      } else upBanner.classList.add("hidden");
+
+      if (!m || !data) {
+        $("towerBody").innerHTML = '<p class="empty-msg">' +
+          (upcoming ? "開始前・データなし" : "タイミングデータを読み込み中…") + "</p>";
+        $("detailCard").innerHTML = '<p class="empty-msg">' +
+          (upcoming ? "開始前・データなし" : "読み込み中…") + "</p>";
+        $("rcBody").innerHTML = '<p class="mono" style="font-size:14px;color:var(--dim)">' +
+          (upcoming ? "開始前・データなし" : "読み込み中…") + "</p>";
+        $("wxBody").innerHTML = '<p class="mono" style="font-size:14px;color:var(--dim)">天候データなし</p>';
+        $("wxStrip").textContent = "";
+        $("flagBadge").innerHTML = "";
+        return;
+      }
+
+      var rows = computeRows(m, data, cursorMs);
+      var sessionBestLap = null;
+      rows.forEach(function (r) {
+        if (r.bestLap !== null && (sessionBestLap === null || r.bestLap < sessionBestLap)) sessionBestLap = r.bestLap;
+      });
+      var bests = bestsAtCursor(m, data, cursorMs);
+
+      // [FIX 4] just-crossed highlight only on slots showing a value.
+      function sectorFresh(end, v) {
+        return v !== null && v !== undefined && end !== null && end !== undefined &&
+          cursorMs >= end && cursorMs - end < 2500;
+      }
+      function teamColor(d) { return "#" + (d.team_colour || "888888"); }
+      function isFerrari(d) { return d.team_name === "Ferrari"; }
+
+      // ---- tower ----
+      var html = "";
+      if (rows.length === 0) {
+        html = '<p class="empty-msg">このセッションのデータはまだありません</p>';
+      } else {
+        html = '<ul class="tower-list">';
+        rows.forEach(function (r) {
+          var d = r.driver;
+          var ts = r.stint ? tyreStyle(r.stint.compound) : null;
+          var isSel = d.driver_number === S.selected;
+          var isFastest = sessionBestLap !== null && r.bestLap !== null && r.bestLap <= sessionBestLap + 1e-9;
+          html += '<li><button type="button" class="tower-row' + (isSel ? " selected" : "") +
+            (!isSel && isFerrari(d) ? " ferrari" : "") + '" data-select-driver="' + d.driver_number +
+            '" aria-label="' + esc(d.full_name) + 'を選択" aria-pressed="' + isSel + '">';
+          html += '<span class="pos' + (r.position === null ? " unknown" : "") + '">' +
+            (r.position === null ? "—" : r.position) + "</span>";
+          html += '<span class="cbar' + (isFerrari(d) ? " wide" : "") + '" style="background:' + teamColor(d) + '"></span>';
+          html += '<span class="acr-cell"><span class="acr">' + esc(d.name_acronym) + "</span>" +
+            (r.pitOut ? '<span class="mini-tag out">OUT</span>' : "") +
+            (isFastest ? '<span class="mini-tag fl">FL</span>' : "") + "</span>";
+          html += '<span class="best only-sm" style="' + (isFastest ? "color:var(--purple)" : "") + '">' + fmtLap(r.bestLap) + "</span>";
+          html += '<span class="last only-sm">' + fmtLap(r.lastLap ? r.lastLap.lap_duration : null) + "</span>";
+          for (var si = 0; si < 3; si++) {
+            var v = r.curSectors[si], kind = r.curSectorKinds[si] || "none";
+            var fresh = sectorFresh(r.curSectorEnds[si], v);
+            html += '<span class="sect only-sm" style="color:' + (v !== null && v !== undefined ? sectorColor(kind) : "var(--dim)") +
+              (fresh ? ";background:color-mix(in srgb, " + sectorColor(kind) + " 32%, transparent)" : "") + '">' +
+              (v !== null && v !== undefined ? fmtSector(v) : "—") + "</span>";
+          }
+          html += '<span class="tyre only-sm">' + (ts ?
+            '<span class="tyre-chip" style="background:' + ts.bg + ";color:" + ts.fg + '">' + ts.label + '</span>' +
+            '<span class="tyre-cell"><span class="age">' + (r.tyreAge !== null ? r.tyreAge + "L" : "") + "</span></span>" :
+            '<span style="color:var(--dim)">—</span>') + "</span>";
+          html += '<span class="pit only-sm">' + (r.stops > 0 ? r.stops : "—") + "</span>";
+          html += '<span class="int only-sm">' + (r.position === 1 ? "—" : fmtGap(r.interval)) + "</span>";
+          html += '<span class="gap">' + (r.position === 1 ? "—" : fmtGap(r.gap)) + "</span>";
+          // mobile sub-line: BEST/LAST + live sectors always visible
+          html += '<span class="sub-line"><span>BEST <span class="v" style="' +
+            (isFastest ? "color:var(--purple)" : "") + '">' + fmtLap(r.bestLap) + '</span></span>' +
+            '<span>LAST <span class="v">' + fmtLap(r.lastLap ? r.lastLap.lap_duration : null) + '</span></span>' +
+            '<span class="sects">';
+          for (var sj = 0; sj < 3; sj++) {
+            var v2 = r.curSectors[sj], kind2 = r.curSectorKinds[sj] || "none";
+            var fresh2 = sectorFresh(r.curSectorEnds[sj], v2);
+            html += '<span class="s" style="' + (fresh2 ? "background:color-mix(in srgb, " + sectorColor(kind2) + " 32%, transparent)" : "") +
+              '">S' + (sj + 1) + ' <span style="color:' +
+              (v2 !== null && v2 !== undefined ? sectorColor(kind2) : "var(--dim)") + '">' +
+              (v2 !== null && v2 !== undefined ? fmtSector(v2) : "—") + "</span></span>";
+          }
+          html += "</span>" + (ts ?
+            '<span class="tyre"><span class="tyre-chip" style="background:' + ts.bg + ";color:" + ts.fg + '">' + ts.label +
+            "</span>" + (r.tyreAge !== null ? " " + r.tyreAge + "L" : "") + "</span>" : "") +
+            "<span>Lap " + (r.currentLapNum || "—") + "</span></span>";
+          html += "</button></li>";
+        });
+        html += "</ul>";
+      }
+      $("towerBody").innerHTML = html;
+
+      renderDetail(m, data, cursorMs, rows, bests, sectorFresh);
+      renderRaceControlAndWeather(data, cursorMs);
+      updateOverlay(rows);
+    }
+
+    function renderDetail(m, data, cursorMs, rows, bests, sectorFresh) {
+      var drivers = data.drivers;
+      var selDriver = null;
+      drivers.forEach(function (d) { if (d.driver_number === S.selected) selDriver = d; });
+      if (!selDriver) selDriver = drivers[0];
+      var card = $("detailCard");
+      if (!selDriver) {
+        card.innerHTML = '<p class="empty-msg">ドライバーを選択してください</p>';
+        return;
+      }
+      var selNum = selDriver.driver_number;
+      var selLaps = m.lapsByDriver.get(selNum) || [];
+      var selDone = selLaps.filter(function (l) { return completedAt(m, l, cursorMs); });
+      var selLastLap = selDone.length > 0 ? selDone[selDone.length - 1] : null;
+      var selBestLap = null;
+      selDone.forEach(function (l) {
+        if (l.lap_duration !== null && (selBestLap === null || l.lap_duration < selBestLap)) selBestLap = l.lap_duration;
+      });
+      var selCurrentLap = null;
+      selLaps.forEach(function (l) {
+        if (l.date_start !== null && ms(l.date_start) <= cursorMs) selCurrentLap = l;
+      });
+      if (!selCurrentLap) {
+        selLaps.forEach(function (l) {
+          if (l.date_start === null && (data.pits || []).some(function (p) {
+            return p.driver_number === selNum && p.lap_number === l.lap_number && ms(p.date) <= cursorMs;
+          })) selCurrentLap = l;
+        });
+      }
+      if (!selCurrentLap) selCurrentLap = selLastLap;
+      var focusLapObj = null;
+      if (S.focusLapNum !== null) {
+        selLaps.forEach(function (l) { if (l.lap_number === S.focusLapNum) focusLapObj = l; });
+      }
+      var focusLap = (focusLapObj && focusLapObj.date_start !== null && ms(focusLapObj.date_start) <= cursorMs) ? focusLapObj : null;
+      var telLap = focusLap || selCurrentLap;
+      var telIsFocus = focusLap !== null && (!selCurrentLap || focusLap.lap_number !== selCurrentLap.lap_number);
+      var selRow = null;
+      rows.forEach(function (r) { if (r.driver.driver_number === selNum) selRow = r; });
+      var selLapStartMs = selCurrentLap ? m.effStartOf(selCurrentLap) : null;
+      var selLapElapsedRaw = selLapStartMs !== null ? Math.max(0, (cursorMs - selLapStartMs) / 1000) : null;
+      var selLapElapsed = selLapElapsedRaw;
+      if (selLapElapsedRaw !== null && selCurrentLap && selCurrentLap.lap_duration !== null && selCurrentLap.lap_duration !== undefined &&
+          completedAt(m, selCurrentLap, cursorMs)) {
+        selLapElapsed = Math.min(selLapElapsedRaw, selCurrentLap.lap_duration);
+      }
+      // Telemetry (single-timestamp rule: readouts, charts and the map
+      // all read the same cursor/sample).
+      var car = computeTelemetry(m, selLaps, telLap, telIsFocus, cursorMs);
+      var latestCar = car.latest;
+
+      var teamColor = "#" + (selDriver.team_colour || "888888");
+      var h = "";
+      h += '<div class="detail-head"><span class="num-badge" style="background:' + teamColor + '">' + selDriver.driver_number + "</span>" +
+        "<h2>" + esc(selDriver.first_name || "") + " " + esc(selDriver.last_name || selDriver.full_name) +
+        '<span class="team">' + esc(selDriver.team_name || "") + "</span></h2>" +
+        '<span class="pos-lap">' + (selRow && selRow.position !== null ? "P" + selRow.position : "順位 —") +
+        " ・ Lap " + (selCurrentLap ? selCurrentLap.lap_number : "—") + "</span></div>";
+      h += '<div class="stat-grid">' +
+        '<div><div class="lbl">ベスト</div><div class="val">' + fmtLap(selBestLap) + "</div></div>" +
+        '<div><div class="lbl">直近ラップ</div><div class="val">' + fmtLap(selLastLap ? selLastLap.lap_duration : null) + "</div></div>" +
+        '<div><div class="lbl">現在のラップ</div><div class="val">' + (selLapElapsed !== null ? fmtLapClock(selLapElapsed) : "—") + "</div></div>" +
+        '<div><div class="lbl">速度</div><div class="val">' + (latestCar ? latestCar.speed + " km/h" : "—") + "</div></div>" +
+        '<div><div class="lbl">ギア / 回転数 / DRS</div><div class="val">' +
+          (latestCar ? latestCar.n_gear + " / " + latestCar.rpm + " / " + (latestCar.drs !== null && latestCar.drs >= 10 ? "ON" : "—") : "—") +
+        "</div></div></div>";
+
+      if (selRow) {
+        h += '<div class="block"><div class="sect-label">現在のラップのセクター（Lap ' +
+          (selCurrentLap ? selCurrentLap.lap_number : "—") +
+          " ・ 通過した順に表示 / 紫=全体ベスト ・ 緑=自己ベスト ・ 黄=自己ベストより遅い）</div>" +
+          '<div class="sect-grid">';
+        for (var i = 0; i < 3; i++) {
+          var v = selRow.curSectors[i], kind = selRow.curSectorKinds[i] || "none";
+          var fresh = sectorFresh(selRow.curSectorEnds[i], v);
+          var spd = selCurrentLap ? [selCurrentLap.i1_speed, selCurrentLap.i2_speed, selCurrentLap.st_speed][i] : null;
+          h += '<div class="sect-box"' + (fresh ? ' style="box-shadow: inset 0 0 0 1.5px ' + sectorColor(kind) + '"' : "") + ">" +
+            '<div class="top"><span class="nm">S' + (i + 1) + '</span><span class="sp">' +
+            (v !== null && v !== undefined && spd ? spd + " km/h" : "") + "</span></div>" +
+            '<div class="vl' + (v === null || v === undefined ? " dimv" : "") + '" style="' +
+            (v !== null && v !== undefined ? "color:" + sectorColor(kind) : "") + '">' +
+            (v !== null && v !== undefined ? fmtSector(v) : "—") + "</div></div>";
+        }
+        h += "</div></div>";
+      }
+
+      if (selLastLap) {
+        var lastKinds = selRow ? selRow.sectorKinds : ["none", "none", "none"];
+        var lastDefs = [
+          ["S1", selLastLap.duration_sector_1, lastKinds[0], selLastLap.i1_speed],
+          ["S2", selLastLap.duration_sector_2, lastKinds[1], selLastLap.i2_speed],
+          ["S3", selLastLap.duration_sector_3, lastKinds[2], selLastLap.st_speed]
+        ];
+        h += '<div class="block"><div class="sect-label">直近ラップのセクター（紫=全体ベスト / 緑=自己ベスト / 黄=自己ベストより遅い）</div><div class="sect-grid">';
+        lastDefs.forEach(function (def) {
+          h += '<div class="sect-box"><div class="top"><span class="nm">' + def[0] + '</span><span class="sp">' +
+            (def[3] ? def[3] + " km/h" : "") + '</span></div><div class="vl" style="color:' + sectorColor(def[2]) + '">' +
+            fmtSector(def[1]) + "</div></div>";
+        });
+        h += "</div></div>";
+      }
+
+      var selPB = bests.personal.get(selNum) || [null, null, null];
+      if (selPB.some(function (v) { return v !== null; })) {
+        var theo = selPB.every(function (v) { return v !== null; })
+          ? selPB.reduce(function (a, b) { return a + b; }, 0) : null;
+        h += '<div class="block"><div class="sect-label">ベストセクター（紫=全体ベスト / 緑=自己ベスト）と理論ベスト</div><div class="sect-grid4">';
+        selPB.forEach(function (v, i) {
+          var ob = bests.overall[i];
+          var kind = (v !== null && ob !== null && ob !== undefined && v <= ob + 1e-9) ? "purple" : (v !== null ? "green" : "none");
+          h += '<div class="sect-box"><div class="nm">S' + (i + 1) + ' ベスト</div><div class="vl" style="color:' + sectorColor(kind) + '">' + fmtSector(v) + "</div></div>";
+        });
+        h += '<div class="sect-box ring-purple"><div class="nm">理論ベスト</div><div class="vl" style="color:var(--purple)">' +
+          (theo !== null ? fmtLap(theo) : "—") + "</div></div>";
+        h += "</div></div>";
+      }
+
+      // ---- full lap history at the cursor (no future leak) ----
+      var startedHist = selLaps.filter(function (l) {
+        return (l.date_start !== null && ms(l.date_start) <= cursorMs) ||
+          (l.date_start === null && (data.pits || []).some(function (p) {
+            return p.driver_number === selNum && p.lap_number === l.lap_number && ms(p.date) <= cursorMs;
+          }));
+      });
+      var selStintsAll = (data.stints || []).filter(function (s) { return s.driver_number === selNum; });
+      var histRows = startedHist.map(function (l) {
+        var superseded = startedHist.some(function (o) { return o.lap_number > l.lap_number; });
+        var done = completedAt(m, l, cursorMs) || (l.lap_duration === null && superseded);
+        var stint = null;
+        selStintsAll.forEach(function (s) { if (l.lap_number >= s.lap_start && l.lap_number <= s.lap_end) stint = s; });
+        var tyreAge = stint ? stint.tyre_age_at_start + (l.lap_number - stint.lap_start) : null;
+        var sectors, kinds, speeds;
+        if (done) {
+          sectors = [l.duration_sector_1, l.duration_sector_2, l.duration_sector_3];
+          kinds = m.lapKinds.get(selNum + ":" + l.lap_number) || ["none", "none", "none"];
+          speeds = [l.i1_speed, l.i2_speed, l.st_speed];
+        } else {
+          var rev = revealedSectors(m, l, cursorMs);
+          sectors = rev.values;
+          kinds = m.lapKinds.get(selNum + ":" + l.lap_number) || ["none", "none", "none"];
+          speeds = [sectors[0] !== null ? l.i1_speed : null, sectors[1] !== null ? l.i2_speed : null, null];
+        }
+        return {
+          lap: l, done: done, sectors: sectors, kinds: kinds, speeds: speeds,
+          stint: stint, tyreAge: tyreAge,
+          isBest: done && l.lap_duration !== null && selBestLap !== null && l.lap_duration <= selBestLap + 1e-9
+        };
+      });
+      histRows.sort(function (a, b) { return b.lap.lap_number - a.lap.lap_number; });
+
+      h += '<div class="block"><div class="history-head"><span class="sect-label" style="margin:0">全ラップ履歴（行をタップするとそのラップのテレメトリを表示）</span>' +
+        '<span class="mono" style="font-size:11px;color:var(--dim)">' + histRows.length + " laps</span></div>" +
+        '<div class="history-cols"><span>Lap</span><span>Time</span><span>S1</span><span>S2</span><span>S3</span><span>Tyre</span></div>';
+      if (histRows.length === 0) {
+        h += '<p class="mono" style="font-size:12px;color:var(--dim);padding:12px 0">この時点ではまだラップがありません</p>';
+      } else {
+        h += '<ul class="history-scroll" id="historyScroll">';
+        histRows.forEach(function (hr) {
+          var l = hr.lap;
+          var ts = hr.stint ? tyreStyle(hr.stint.compound) : null;
+          var isFocus = focusLap !== null && focusLap.lap_number === l.lap_number;
+          h += '<li><button type="button" class="history-btn' + (isFocus ? " focused" : "") +
+            '" data-focus-lap="' + l.lap_number + '" aria-label="Lap ' + l.lap_number + ' のテレメトリを表示" aria-pressed="' + isFocus + '">' +
+            '<span class="history-row-grid"><span class="lapno">' + l.lap_number + "</span>" +
+            '<span class="laptime" style="' + (hr.isBest ? "color:var(--purple)" : "") + '">' +
+            (hr.done ? fmtLap(l.lap_duration) : "—") + "</span>";
+          hr.sectors.forEach(function (s, i) {
+            h += '<span style="color:' + sectorColor(hr.kinds[i] || "none") + '">' + fmtSector(s) + "</span>";
+          });
+          h += '<span class="tyre-cell">' + (ts ?
+            '<span class="tyre-chip" style="background:' + ts.bg + ";color:" + ts.fg + '">' + ts.label + '</span>' +
+            '<span class="age">' + (hr.tyreAge !== null ? hr.tyreAge + "L" : "") + "</span>" :
+            '<span style="color:var(--dim)">—</span>') + "</span></span>" +
+            '<span class="history-sub"><span>I1 ' + (hr.speeds[0] === null || hr.speeds[0] === undefined ? "—" : hr.speeds[0]) +
+            " ・ I2 " + (hr.speeds[1] === null || hr.speeds[1] === undefined ? "—" : hr.speeds[1]) +
+            " ・ ST " + (hr.speeds[2] === null || hr.speeds[2] === undefined ? "—" : hr.speeds[2]) + " km/h</span>" +
+            (l.is_pit_out_lap ? '<span class="tag tag-out">PIT OUT</span>' : "") +
+            (!hr.done ? '<span class="tag tag-prog">進行中</span>' : "") +
+            (hr.isBest ? '<span class="tag-fl" style="font-weight:700">最速ラップ</span>' : "") +
+            (isFocus ? '<span style="color:var(--text)">テレメトリ表示中</span>' : "") +
+            "</span></button></li>";
+        });
+        h += "</ul>";
+      }
+      h += "</div>";
+
+      if (telIsFocus) {
+        h += '<div class="focus-banner"><span class="t">Lap ' + (telLap ? telLap.lap_number : "—") +
+          " のテレメトリを表示中" + (telLap && telLap.lap_duration ? "（" + fmtLap(telLap.lap_duration) + "）" : "") +
+          '</span><button type="button" data-focus-clear="1">現在のラップに戻す</button></div>';
+      }
+
+      var cSpeed = chartSvg(S.carPoints, function (p) { return p.speed; }, "#f4f6f8", car.fromMs, car.domainToMs, car.cursorMs, 360, true);
+      var cThr = chartSvg(S.carPoints, function (p) { return p.throttle; }, "#00d26a", car.fromMs, car.domainToMs, car.cursorMs, 100, false);
+      var cBrk = chartSvg(S.carPoints, function (p) { return p.brake; }, "#e10600", car.fromMs, car.domainToMs, car.cursorMs, 1, false);
+      h += '<div class="charts">' +
+        '<div><div class="chart-head"><span class="lbl">速度</span><span class="val">' +
+          (cSpeed.current === null ? "—" : cSpeed.current + " km/h") + "</span></div>" + cSpeed.svg + "</div>" +
+        '<div><div class="chart-head"><span class="lbl">スロットル</span><span class="val">' +
+          (cThr.current === null ? "—" : cThr.current + "%") + "</span></div>" + cThr.svg + "</div>" +
+        '<div><div class="chart-head"><span class="lbl">ブレーキ</span><span class="val">' +
+          (cBrk.current === null ? "—" : cBrk.current) + "</span></div>" + cBrk.svg + "</div></div>";
+      if (latestCar) {
+        h += '<p class="chart-note">ブレーキ ' + (latestCar.brake ? "ON" : "OFF") + " ・ スロットル " + latestCar.throttle +
+          "% ・ テレメトリは" + (telIsFocus ? "選択中の" : "現在の") + "ラップ（Lap " +
+          (telLap ? telLap.lap_number : "—") + "）のものです</p>";
+      }
+
+      var selCursorLap = selCurrentLap ? selCurrentLap.lap_number : 0;
+      var visibleStints = selStintsAll.filter(function (s) { return s.lap_start <= selCursorLap; });
+      if (visibleStints.length > 0) {
+        h += '<div class="block"><div class="sect-label">スティント履歴</div><div class="chips">';
+        visibleStints.forEach(function (s) {
+          var ts2 = tyreStyle(s.compound);
+          var isCurrent = selCursorLap >= s.lap_start && selCursorLap <= s.lap_end;
+          var shownEnd = Math.min(s.lap_end, Math.max(selCursorLap, s.lap_start));
+          h += '<span class="stint-chip' + (isCurrent ? " current" : "") + '">' +
+            '<span class="tyre-chip" style="background:' + ts2.bg + ";color:" + ts2.fg + '">' + ts2.label + "</span>" +
+            "L" + s.lap_start + "–L" + shownEnd + "（" + esc(s.compound || "—") + "）" +
+            (isCurrent ? " ・ 進行中" : "") + "</span>";
+        });
+        h += "</div></div>";
+      }
+
+      var prevScroll = $("historyScroll");
+      var keepScroll = prevScroll ? prevScroll.scrollTop : lastHistoryScroll;
+      card.innerHTML = h;
+      var newScroll = $("historyScroll");
+      if (newScroll) newScroll.scrollTop = keepScroll;
+    }
+
+    // Telemetry window = the WHOLE telemetry lap (never clamped to
+    // cursor+3s, which froze the charts at a left-edge sliver). Fetch is
+    // orchestrated in maybeFetchCarData; here we only derive geometry
+    // and the readout sample from whatever points are cached.
+    function computeTelemetry(m, selLaps, telLap, telIsFocus, cursorMs) {
+      var fromMs = telLap ? (m.effStartOf(telLap) || 0) : 0;
+      var idx = -1, i;
+      if (telLap) for (i = 0; i < selLaps.length; i++) if (selLaps[i].lap_number === telLap.lap_number) idx = i;
+      var nextLapStartMs = (idx >= 0 && selLaps[idx + 1]) ? m.effStartOf(selLaps[idx + 1]) : null;
+      var spanKnown = (telLap && telLap.lap_duration !== null && telLap.lap_duration !== undefined) || nextLapStartMs !== null;
+      var spanSec = telLap && telLap.lap_duration !== null && telLap.lap_duration !== undefined
+        ? telLap.lap_duration
+        : (nextLapStartMs !== null && fromMs > 0 ? (nextLapStartMs - fromMs) / 1000 : 240);
+      var endMs = fromMs > 0 ? fromMs + spanSec * 1000 : 0;
+      var telCursorMs = telIsFocus ? endMs : cursorMs;
+      var domainToMs = 0;
+      if (fromMs > 0) {
+        if (spanKnown) domainToMs = fromMs + (spanSec + 1) * 1000;
+        else {
+          var lastPt = S.carPoints.length > 0 ? ms(S.carPoints[S.carPoints.length - 1].date) : 0;
+          domainToMs = Math.max(telCursorMs, lastPt, fromMs + 1000) + 500;
+        }
+      }
+      var latest = null;
+      for (i = 0; i < S.carPoints.length; i++) {
+        if (ms(S.carPoints[i].date) <= telCursorMs) latest = S.carPoints[i]; else break;
+      }
+      return { fromMs: fromMs, spanSec: spanSec, spanKnown: spanKnown, endMs: endMs, cursorMs: telCursorMs, domainToMs: domainToMs, latest: latest, telLap: telLap };
+    }
+
+    function renderRaceControlAndWeather(data, cursorMs) {
+      var all = data.race_control.filter(function (r) { return ms(r.date) <= cursorMs; });
+      var sorted = all.slice().sort(function (a, b) { return a.date < b.date ? 1 : -1; }).slice(0, 200);
+      // track status flag in the header
+      var status = null;
+      for (var i = 0; i < sorted.length; i++) {
+        var r0 = sorted[i], msgU = r0.message.toUpperCase();
+        if (msgU.indexOf("VIRTUAL SAFETY CAR") >= 0) { status = { label: "VSC", bg: "#ffd12e", fg: "#111" }; break; }
+        if (msgU.indexOf("SAFETY CAR") >= 0) { status = { label: "SC", bg: "#ffd12e", fg: "#111" }; break; }
+        if (r0.flag === "RED") { status = { label: "RED FLAG", bg: "#e10600", fg: "#fff" }; break; }
+        if (r0.flag === "CHEQUERED") { status = { label: "CHEQUERED", bg: "#f4f6f8", fg: "#111" }; break; }
+        if (r0.flag === "YELLOW" || r0.flag === "DOUBLE YELLOW") { status = { label: "YELLOW", bg: "#ffd12e", fg: "#111" }; break; }
+        if (r0.flag === "GREEN") { status = { label: "GREEN", bg: "#00d26a", fg: "#111" }; break; }
+      }
+      $("flagBadge").innerHTML = (status && S.elapsed > 0)
+        ? '<span class="flag-badge" style="background:' + status.bg + ";color:" + status.fg + '">' + status.label + "</span>" : "";
+      var rc = $("rcBody");
+      if (sorted.length === 0) {
+        rc.innerHTML = '<p class="mono" style="font-size:14px;color:var(--dim)">' +
+          (computeLive() || S.elapsed > 0 ? "この時点までのメッセージはありません" : "再生が進むとメッセージが表示されます") + "</p>";
+      } else {
+        var h = '<ul class="rc-list">';
+        sorted.forEach(function (r) {
+          var flagBg = r.flag === "GREEN" ? "#00d26a" :
+            (r.flag === "YELLOW" || r.flag === "DOUBLE YELLOW") ? "#ffd12e" :
+            r.flag === "RED" ? "#e10600" : r.flag === "BLUE" ? "#2f7bff" :
+            r.flag === "CHEQUERED" ? "#f4f6f8" : "#33383f";
+          var flagFg = (r.flag === "RED" || r.flag === "BLUE") ? "#fff" : "#111";
+          h += '<li><span class="time">' + jstTime.format(ms(r.date)) + "</span>" +
+            (r.flag ? '<span class="flag" style="background:' + flagBg + ";color:" + flagFg + '">' + esc(r.flag) + "</span>" : "") +
+            "<span>" + esc(r.message) + "</span></li>";
+        });
+        h += "</ul>";
+        rc.innerHTML = h;
+      }
+      // weather at cursor (never a future sample)
+      var wx = null;
+      var wxAll = data.weather.slice().sort(function (a, b) { return a.date < b.date ? -1 : 1; });
+      for (var j = 0; j < wxAll.length; j++) {
+        if (ms(wxAll[j].date) <= cursorMs) wx = wxAll[j]; else break;
+      }
+      var wb = $("wxBody");
+      if (wx) {
+        wb.innerHTML = '<dl class="wx-grid">' +
+          '<div><dt>気温</dt><dd>' + (wx.air_temperature === null ? "—" : wx.air_temperature) + " ℃</dd></div>" +
+          '<div><dt>路面温度</dt><dd>' + (wx.track_temperature === null ? "—" : wx.track_temperature) + " ℃</dd></div>" +
+          '<div><dt>風速 / 風向</dt><dd>' + (wx.wind_speed === null ? "—" : wx.wind_speed) + " m/s / " + (wx.wind_direction === null ? "—" : wx.wind_direction) + "°</dd></div>" +
+          '<div><dt>湿度 / 気圧</dt><dd>' + (wx.humidity === null ? "—" : wx.humidity) + "% / " + (wx.pressure === null ? "—" : wx.pressure) + " hPa</dd></div>" +
+          '<div><dt>降雨</dt><dd>' + (wx.rainfall ? "あり" : "なし") + "</dd></div>" +
+          '<div><dt>観測時刻</dt><dd>' + jstTime.format(ms(wx.date)) + " JST</dd></div></dl>";
+        $("wxStrip").textContent = "AIR " + (wx.air_temperature === null ? "—" : wx.air_temperature) + "℃ / TRACK " +
+          (wx.track_temperature === null ? "—" : wx.track_temperature) + "℃ / WIND " +
+          (wx.wind_speed === null ? "—" : wx.wind_speed) + "m/s / HUM " + (wx.humidity === null ? "—" : wx.humidity) + "%" +
+          (wx.rainfall ? " / RAIN" : "");
+      } else {
+        wb.innerHTML = '<p class="mono" style="font-size:14px;color:var(--dim)">天候データなし</p>';
+        $("wxStrip").textContent = "";
+      }
+    }
+
+    function updateOverlay(rows) {
+      var ov = $("mapOverlay");
+      var selDriver = null;
+      if (S.data) S.data.drivers.forEach(function (d) { if (d.driver_number === S.selected) selDriver = d; });
+      if (!selDriver) { ov.classList.add("hidden"); return; }
+      var m = ensureModel();
+      var cursorMs = sessionStartMs() + S.elapsed * 1000;
+      var selLaps = m ? (m.lapsByDriver.get(selDriver.driver_number) || []) : [];
+      var telLap = null;
+      selLaps.forEach(function (l) { if (l.date_start !== null && ms(l.date_start) <= cursorMs) telLap = l; });
+      var focusLapObj = null;
+      if (S.focusLapNum !== null) selLaps.forEach(function (l) { if (l.lap_number === S.focusLapNum) focusLapObj = l; });
+      var focusLap = (focusLapObj && focusLapObj.date_start !== null && ms(focusLapObj.date_start) <= cursorMs) ? focusLapObj : null;
+      if (focusLap) telLap = focusLap;
+      var telIsFocus = focusLap !== null && telLap === focusLap && S.focusLapNum !== null &&
+        (selLaps.filter(function (l) { return l.date_start !== null && ms(l.date_start) <= cursorMs; }).pop() || {}).lap_number !== focusLap.lap_number;
+      var car = m && telLap ? computeTelemetry(m, selLaps, telLap, telIsFocus, cursorMs) : { latest: null };
+      var latest = car.latest;
+      var h = '<span class="bar" style="background:#' + esc(selDriver.team_colour || "888888") + '"></span>' +
+        '<span class="acr">' + esc(selDriver.name_acronym) + "</span>";
+      if (telIsFocus) {
+        h += '<span class="note">Lap ' + telLap.lap_number + " のテレメトリ表示中</span>";
+      } else if (latest) {
+        h += '<span class="spd">' + latest.speed + '<span class="unit">km/h</span></span>' +
+          '<span class="gear">GEAR ' + latest.n_gear + "</span>" +
+          (latest.drs !== null && latest.drs >= 10 ? '<span class="drs-chip">DRS</span>' : "");
+      } else {
+        h += '<span class="spd">—<span class="unit">km/h</span></span><span class="gear">GEAR —</span>';
+      }
+      ov.innerHTML = h;
+      ov.classList.remove("hidden");
+    }
+
+    // ------------------------------------------------------------------
+    // Data orchestration
+    // ------------------------------------------------------------------
+    async function loadSessions() {
+      var r = await apiGetSessions();
+      if (r.sessions.length > 0) {
+        S.sessions = r.sessions;
+        S.latestKey = r.latest_key;
+        if (S.sessionKey === null) S.sessionKey = r.latest_key || (r.sessions[0] && r.sessions[0].session_key) || null;
+        S.session = null;
+        S.sessions.forEach(function (s) { if (s.session_key === S.sessionKey) S.session = s; });
+        var sel = $("sessionSelect");
+        var cur = sel.value;
+        sel.innerHTML = S.sessions.map(function (s) {
+          return '<option value="' + s.session_key + '">' + esc(s.session_name) + "（" + jstDay.format(ms(s.date_start)) + "）</option>";
+        }).join("");
+        sel.value = String(S.sessionKey);
+        if (cur !== sel.value) onSessionChanged();
+      }
+      return r.sessions.length > 0;
+    }
+
+    function onSessionChanged() {
+      S.data = null; model = null;
+      S.dataError = false; S.ready = false; S.playing = false;
+      S.focusLapNum = null;
+      S.outline = []; S.bounds = null; S.outlineFracs = null; S.outlineKey = "";
+      S.outlineError = false; S.outlineLastTry = 0; S.errRetryAt = 0;
+      S.locCache = new Map(); S.locByDriver = new Map(); S.locInflight = new Set();
+      S.locError = false; S.locFailAt = new Map(); S.locFetching = false;
+      S.carKey = ""; S.carPoints = [];
+      if (S.session) {
+        var now = Date.now();
+        S.cursorRef = (now >= sessionStartMs() && now <= effEndMs()) ? now : sessionStartMs();
+        S.elapsed = Math.max(0, (S.cursorRef - sessionStartMs()) / 1000);
+      }
+      buildMap();
+      loadSessionData(false);
+    }
+
+    // In-flight guard: boot used to fire two full loads in parallel
+    // (loadSessions -> onSessionChanged, then boot -> onSessionChanged),
+    // doubling the request burst and tripping OpenF1's rate limit, which
+    // then surfaced as a stuck error banner and failed location loads.
+    // A call made while a load is running is queued (latest wins).
+    var loadBusy = false, loadQueued = null;
+    async function loadSessionData(forceFull) {
+      var k = S.sessionKey;
+      if (k === null || !S.session || isUpcoming()) return;
+      if (loadBusy) { loadQueued = { k: k, forceFull: !!forceFull }; return; }
+      loadBusy = true;
+      try {
+        var live = computeLive();
+        var prev = S.data;
+        var since = (!forceFull && live && prev && !prev.partial) ? prev.fetched_at : undefined;
+        var res = await apiGetSessionData(k, since);
+        if (S.sessionKey !== k) return; // session switched mid-flight
+        var coreErr = !!res.coreError;
+        if (since && prev) res = mergeSessionData(prev, res);
+        S.data = res;
+        // The stale banner means "an update failed; you are seeing older
+        // data". A secondary-endpoint hiccup on the very first load —
+        // when the tower data itself arrived fine — must not raise it:
+        // in replay nothing would ever clear it again.
+        if (!res.error) S.dataError = false;
+        else if (coreErr || prev) S.dataError = true;
+        model = null;
+        maybeReady();
+        maybeFetchOutline();
+      } finally {
+        loadBusy = false;
+        var q = loadQueued; loadQueued = null;
+        if (q && q.k === S.sessionKey) loadSessionData(q.forceFull);
+      }
+    }
+
+    function maybeReady() {
+      // [FIX 5] the cursor holds at 0 until the first data load AND the
+      // outline have both arrived (or the outline fetch has failed and
+      // is retrying in the background — that must not block playback).
+      // Playback then stays PAUSED until the user presses play, matching
+      // the fixed original build: no 8x runaway from page open.
+      if (S.ready) return;
+      if (!S.data) return;
+      if (S.outlineKey !== String(S.sessionKey) && S.outlineInflight) return;
+      if (S.outlineKey !== String(S.sessionKey) && !S.outlineError && S.data.laps.length > 0) return; // outline pending
+      S.ready = true;
+    }
+
+    async function maybeFetchOutline() {
+      if (!S.data || S.data.laps.length === 0) return;
+      var key = String(S.sessionKey);
+      if (S.outlineKey === key || S.outlineInflight) return;
+      var bestDriver = null, bestDur = null;
+      S.data.laps.forEach(function (l) {
+        if (l.lap_duration !== null && (bestDur === null || l.lap_duration < bestDur)) {
+          bestDur = l.lap_duration; bestDriver = l.driver_number;
+        }
+      });
+      if (bestDriver === null) return;
+      S.outlineInflight = true;
+      S.outlineLastTry = performance.now();
+      var r = await apiGetTrackOutline(S.sessionKey, bestDriver);
+      S.outlineInflight = false;
+      if (String(S.sessionKey) !== key) return;
+      // A failed fetch is NOT "this session has no location data": leave
+      // outlineKey unset so housekeeping retries, and say so on the map.
+      S.outlineError = !!r.error && r.points.length === 0;
+      if (!S.outlineError) S.outlineKey = key;
+      S.outline = r.points;
+      S.outlineFracs = { s1: r.s1, s2: r.s2, s3: r.s3 };
+      if (r.points.length > 0) {
+        var minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        r.points.forEach(function (p) {
+          minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
+          minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y);
+        });
+        var pad = Math.max((maxX - minX) * 0.085, 200);
+        S.bounds = { minX: minX - pad, maxX: maxX + pad, minY: minY - pad, maxY: maxY + pad };
+      } else S.bounds = null;
+      buildMap();
+      maybeReady();
+    }
+
+    // Location windows: speed-aware in replay with next-window prefetch;
+    // a trailing 40s window in LIVE. Windows are cached by anchor.
+    function ensureLocations() {
+      if (!S.session || !S.data || isUpcoming()) return;
+      var live = computeLive();
+      var winLen = live ? 40 : (S.speed >= 16 ? 180 : S.speed >= 4 ? 90 : 45);
+      var anchor = Math.floor(S.elapsed / winLen) * winLen;
+      var key = S.sessionKey + "|" + anchor + "|" + winLen;
+      var entry = S.locCache.get(key);
+      var fresh = entry && (live ? (Date.now() - entry.at < 3000) : true);
+      // A failed window is never cached as "empty": it is retried after a
+      // short cooldown instead of leaving the tracker blank (and the
+      // error label stuck) for the rest of the session.
+      var failAt = S.locFailAt.get(key) || 0;
+      var inCooldown = Date.now() - failAt < 8000;
+      if ((!entry || !fresh) && !inCooldown) {
+        if (!S.locInflight.has(key)) {
+          S.locInflight.add(key);
+          S.locFetching = true;
+          var fromIso = new Date(sessionStartMs() + (anchor - 3) * 1000).toISOString();
+          var toIso = new Date(sessionStartMs() + (anchor + winLen + 4) * 1000).toISOString();
+          apiGetLocations(S.sessionKey, fromIso, toIso).then(function (r) {
+            S.locInflight.delete(key);
+            S.locFetching = S.locInflight.size > 0;
+            S.locError = r.error;
+            if (r.error) { S.locFailAt.set(key, Date.now()); return; }
+            S.locFailAt.delete(key);
+            var byDrv = new Map();
+            r.points.forEach(function (p) {
+              var arr = byDrv.get(p.driver_number) || [];
+              arr.push({ t: ms(p.date), x: p.x, y: p.y });
+              byDrv.set(p.driver_number, arr);
+            });
+            byDrv.forEach(function (arr) { arr.sort(function (a, b) { return a.t - b.t; }); });
+            S.locCache.set(key, { at: Date.now(), byDriver: byDrv });
+            if (S.locCache.size > 24) {
+              var firstKey = S.locCache.keys().next().value;
+              if (firstKey && firstKey !== key) S.locCache.delete(firstKey);
+            }
+          });
+        }
+      } else if (!live && entry) {
+        // prefetch the next window so cars never freeze at a boundary
+        var nextAnchor = anchor + winLen;
+        if (nextAnchor < durationSec()) {
+          var nKey = S.sessionKey + "|" + nextAnchor + "|" + winLen;
+          if (!S.locCache.has(nKey) && !S.locInflight.has(nKey)) {
+            S.locInflight.add(nKey);
+            var nf = new Date(sessionStartMs() + (nextAnchor - 3) * 1000).toISOString();
+            var nt = new Date(sessionStartMs() + (nextAnchor + winLen + 4) * 1000).toISOString();
+            apiGetLocations(S.sessionKey, nf, nt).then(function (r) {
+              S.locInflight.delete(nKey);
+              S.locFetching = S.locInflight.size > 0;
+              if (r.error) return; // never cache a failed window as empty
+              var byDrv = new Map();
+              r.points.forEach(function (p) {
+                var arr = byDrv.get(p.driver_number) || [];
+                arr.push({ t: ms(p.date), x: p.x, y: p.y });
+                byDrv.set(p.driver_number, arr);
+              });
+              byDrv.forEach(function (arr) { arr.sort(function (a, b) { return a.t - b.t; }); });
+              S.locCache.set(nKey, { at: Date.now(), byDriver: byDrv });
+            });
+          }
+        }
+      }
+      var cur = S.locCache.get(key);
+      if (cur) S.locByDriver = cur.byDriver;
+      $("locStatus").textContent = S.locFetching ? "位置データ取得中…" : (S.locError ? "位置データ取得エラー" : "");
+    }
+
+    // Car data: one whole lap per fetch, keyed by lap; LIVE extends via
+    // a 10s bucket in the key plus a 5s refetch of the same key.
+    function maybeFetchCarData() {
+      var m = ensureModel();
+      if (!m || !S.data || isUpcoming()) return;
+      var cursorMs = sessionStartMs() + S.elapsed * 1000;
+      var selLaps = m.lapsByDriver.get(S.selected) || [];
+      var telLap = null;
+      selLaps.forEach(function (l) { if (l.date_start !== null && ms(l.date_start) <= cursorMs) telLap = l; });
+      if (S.focusLapNum !== null) {
+        var f = null;
+        selLaps.forEach(function (l) { if (l.lap_number === S.focusLapNum) f = l; });
+        if (f && f.date_start !== null && ms(f.date_start) <= cursorMs) telLap = f;
+      }
+      if (!telLap) { S.carKey = ""; S.carPoints = []; return; }
+      var fromMs = m.effStartOf(telLap) || 0;
+      if (fromMs <= 0) return;
+      var rawFromMs = telLap.date_start ? ms(telLap.date_start) : fromMs;
+      var fetchFromMs = Math.min(fromMs, rawFromMs);
+      var idx = -1, i;
+      for (i = 0; i < selLaps.length; i++) if (selLaps[i].lap_number === telLap.lap_number) idx = i;
+      var nextStart = (idx >= 0 && selLaps[idx + 1]) ? m.effStartOf(selLaps[idx + 1]) : null;
+      var spanSec = (telLap.lap_duration !== null && telLap.lap_duration !== undefined) ? telLap.lap_duration
+        : (nextStart !== null ? (nextStart - fromMs) / 1000 : 240);
+      var live = computeLive();
+      var key = S.sessionKey + "|" + S.selected + "|" + telLap.lap_number + "|" + Math.round(spanSec) +
+        "|" + (live ? Math.floor(S.elapsed / 10) : 0);
+      var due = live && (Date.now() - S.carFetchedAt > 5000);
+      if ((key === S.carKey && !due) || S.carInflight) return;
+      S.carInflight = true;
+      var seq = ++S.carSeq;
+      var fetchToMs = fromMs + (spanSec + 2) * 1000;
+      apiGetCarData(S.sessionKey, S.selected,
+        new Date(fetchFromMs).toISOString(), new Date(fetchToMs).toISOString()
+      ).then(function (r) {
+        S.carInflight = false;
+        if (seq !== S.carSeq) return; // a newer fetch superseded this one
+        S.carKey = key;
+        S.carFetchedAt = Date.now();
+        S.carPoints = r.points.slice().sort(function (a, b) { return a.date < b.date ? -1 : 1; });
+      });
+    }
+
+    // ------------------------------------------------------------------
+    // Main loop: rAF advances the smooth cursor (map reads it per
+    // frame); derived surfaces update at 5Hz; 1s housekeeping polls.
+    // ------------------------------------------------------------------
+    var lastFrame = performance.now(), lastPush = 0, lastHousekeep = 0;
+    function tick(t) {
+      var dt = (t - lastFrame) / 1000;
+      lastFrame = t;
+      var live = computeLive(), upcoming = isUpcoming();
+      if (S.session && S.ready) {
+        if (live) {
+          S.cursorRef = Math.min(effEndMs(), Math.max(sessionStartMs(), Date.now()));
+        } else if (S.playing && !upcoming) {
+          S.cursorRef = Math.min(effEndMs(), S.cursorRef + dt * S.speed * 1000);
+          if (S.cursorRef >= effEndMs()) S.playing = false;
+        }
+      }
+      updateMapCars();
+      if (t - lastPush >= 200) {
+        lastPush = t;
+        if (S.session) S.elapsed = Math.max(0, (S.cursorRef - sessionStartMs()) / 1000);
+        render();
+        ensureLocations();
+        maybeFetchCarData();
+      }
+      if (t - lastHousekeep >= 1000) {
+        lastHousekeep = t;
+        S.nowMs = Date.now();
+        // sessions list refresh (also detects a session going live)
+        if (t - S.sessTimer >= 30000) {
+          S.sessTimer = t;
+          loadSessions();
+        }
+        // LIVE session-data polling, stretched by the backoff state
+        var interval = 4000 * backoffMult;
+        if (Date.now() < rateLimitUntil) interval = Math.max(interval, 15000);
+        if (S.session && live && t - S.dataTimer >= interval) {
+          S.dataTimer = t;
+          loadSessionData(false);
+        }
+        // a session that was upcoming may have just started
+        if (S.session && upcoming && S.nowMs >= sessionStartMs()) {
+          loadSessionData(false);
+        }
+        // Self-healing: a failed track outline retries (throttled), and a
+        // stuck error state in replay — where no LIVE poll ever runs —
+        // retries the load until it succeeds and the banner clears.
+        if (S.session && S.data && !upcoming) {
+          if (S.outlineKey !== String(S.sessionKey) && !S.outlineInflight &&
+              S.data.laps.length > 0 && t - S.outlineLastTry >= 15000) {
+            maybeFetchOutline();
+          }
+          if (S.dataError && !live && t - S.errRetryAt >= 12000 * backoffMult) {
+            S.errRetryAt = t;
+            loadSessionData(false);
+          }
+        }
+      }
+      requestAnimationFrame(tick);
+    }
+
+    function seek(sec) {
+      var clamped = Math.min(durationSec(), Math.max(0, sec));
+      S.cursorRef = sessionStartMs() + clamped * 1000;
+      S.elapsed = clamped;
+      render();
+      ensureLocations();
+      maybeFetchCarData();
+    }
+
+    // ------------------------------------------------------------------
+    // Events
+    // ------------------------------------------------------------------
+    document.addEventListener("click", function (e) {
+      var t = e.target;
+      var selEl = t.closest ? t.closest("[data-select-driver]") : null;
+      if (selEl) {
+        S.selected = Number(selEl.getAttribute("data-select-driver"));
+        S.focusLapNum = null;
+        S.carKey = ""; S.carSeq++;
+        refreshMapSelection();
+        render();
+        maybeFetchCarData();
+        return;
+      }
+      var fl = t.closest ? t.closest("[data-focus-lap]") : null;
+      if (fl) {
+        S.focusLapNum = Number(fl.getAttribute("data-focus-lap"));
+        S.carKey = ""; S.carSeq++;
+        render();
+        maybeFetchCarData();
+        return;
+      }
+      if (t.closest && t.closest("[data-focus-clear]")) {
+        S.focusLapNum = null;
+        S.carKey = ""; S.carSeq++;
+        render();
+        maybeFetchCarData();
+      }
+    });
+    $("sessionSelect").addEventListener("change", function (e) {
+      S.sessionKey = Number(e.target.value);
+      S.session = null;
+      S.sessions.forEach(function (s) { if (s.session_key === S.sessionKey) S.session = s; });
+      onSessionChanged();
+      render();
+    });
+    $("refreshBtn").addEventListener("click", function () {
+      S.dataTimer = performance.now();
+      loadSessionData(true);
+      ensureLocations();
+    });
+    $("playBtn").addEventListener("click", function () {
+      if (!S.ready) return;
+      var atEnd = S.elapsed >= durationSec() - 0.5;
+      if (atEnd && !S.playing) seek(0);
+      S.playing = !S.playing;
+      render();
+    });
+    $("seek").addEventListener("input", function (e) {
+      if (!S.ready) return;
+      seek(Number(e.target.value));
+    });
+    (function buildSpeedButtons() {
+      var g = $("speedGroup");
+      [1, 4, 8, 30].forEach(function (v) {
+        var b = document.createElement("button");
+        b.type = "button";
+        b.textContent = v + "x";
+        b.setAttribute("data-speed", String(v));
+        b.setAttribute("aria-label", "再生速度 " + v + "倍");
+        if (v === S.speed) b.classList.add("on");
+        b.addEventListener("click", function () { S.speed = v; render(); });
+        g.appendChild(b);
+      });
+    })();
+    document.addEventListener("visibilitychange", function () {
+      // Keep the LIVE cursor honest after the tab was backgrounded.
+      if (!document.hidden && computeLive()) {
+        S.cursorRef = Math.min(effEndMs(), Math.max(sessionStartMs(), Date.now()));
+      }
+    });
+
+    // selection changes need car/map refresh when the driver set changes
+    var lastDriverSetKey = "";
+    setInterval(function () {
+      if (!S.data) return;
+      var key = S.data.drivers.map(function (d) { return d.driver_number; }).join(",");
+      if (key !== lastDriverSetKey) {
+        lastDriverSetKey = key;
+        if (!S.data.drivers.some(function (d) { return d.driver_number === S.selected; }) && S.data.drivers[0]) {
+          S.selected = S.data.drivers[0].driver_number;
+        }
+        buildMap();
+      }
+    }, 1000);
+
+    // ------------------------------------------------------------------
+    // Boot
+    // ------------------------------------------------------------------
+    (async function boot() {
+      var ok = false;
+      try { ok = await loadSessions(); } catch (e) { ok = false; }
+      if (!ok || S.sessions.length === 0) {
+        $("boot").innerHTML = '<p>OpenF1からセッション情報を取得できませんでした。</p>' +
+          '<button type="button" class="btn-accent" onclick="location.reload()">再試行</button>';
+        return;
+      }
+      $("boot").classList.add("hidden");
+      $("mainUI").classList.remove("hidden");
+      onSessionChanged();
+      render();
+      requestAnimationFrame(function (t) { lastFrame = t; requestAnimationFrame(tick); });
+    })();
+    </script>
+  </body>
+</html>
