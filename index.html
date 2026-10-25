@@ -530,7 +530,7 @@ table.official-tower tr.inpit td.pos { color:#ffd12e; }
           <p class="tower-note">
             S1/S2/S3は現在走行中ラップのライブセクターで、車が各セクターを通過した順に表示されます（色は通過時点の判定：紫=全体ベスト、緑=自己ベスト、黄=自己ベストより遅い）。
             INTは前車との差、GAPはリーダーとの差（レース時はintervals実測、プラクティス時はベストラップ差）。PITはカーソル時点までのピットレーン通過回数（/pit実測、セッション開始時のガレージ退出を含む）。
-            FLはセッション最速ラップ。順位はpositionフィードの実測値で、無い場合は「—」です。S1に「*」が付いた値はラップタイムから逆算した値です。GAPが薄く表示されている車はインターバル情報の更新が止まっています（古い値の可能性があります）。データ出典：OpenF1 API（api.openf1.org）
+            FLはセッション最速ラップ。順位はpositionフィードの実測値で、無い場合は「—」です。S1に「*」が付いた値はラップタイムから逆算した値です。GAPが薄く表示されている車はインターバル情報の更新が止まっています（古い値の可能性があります）。予選で「D」が付いたラップはレースコントロールにより削除されたもので、ベストタイムからは除外されています。データ出典：OpenF1 API（api.openf1.org）
           </p>
         </section>
       </main>
@@ -710,6 +710,7 @@ table.official-tower tr.inpit td.pos { color:#ffd12e; }
           circuit_short_name: str(r.circuit_short_name),
           location: str(r.location),
           country_name: str(r.country_name),
+          gmt_offset: str(r.gmt_offset),
           year: num(r.year) || 0
         };
       });
@@ -801,7 +802,8 @@ table.official-tower tr.inpit td.pos { color:#ffd12e; }
           date: str(r.date) || "", message: str(r.message) || "",
           category: str(r.category), flag: str(r.flag),
           driver_number: num(r.driver_number), lap_number: num(r.lap_number),
-          scope: str(r.scope), sector: num(r.sector)
+          scope: str(r.scope), sector: num(r.sector),
+          qualifying_phase: (r.qualifying_phase === undefined ? null : r.qualifying_phase)
         };
       });
       var weather = asArray(rs[5]).map(function (r) {
@@ -1248,10 +1250,97 @@ table.official-tower tr.inpit td.pos { color:#ffd12e; }
       return { overall: overall, personal: personal };
     }
 
+    // ------------------------------------------------------------------
+    // Qualifying semantics — a faithful port of reference_tower.py:
+    // phases from race_control SessionStatus messages carrying
+    // qualifying_phase; a lap belongs to the latest phase whose start
+    // is <= the lap's RAW date_start (among phases started by the
+    // cursor); lap deletions from race_control DELETED messages
+    // published <= cursor; elimination from the position feed once a
+    // phase has finished.
+    // ------------------------------------------------------------------
+    var DELETION_RE = /CAR (\d+) \(\w+\) (?:TIME (\d+):(\d+\.\d+) DELETED|LAP DELETED)/;
+    var LOCAL_TIME_RE = /\b(\d\d):(\d\d):(\d\d)\b/;
+    function parseGmtOffsetMs(s) {
+      if (!s) return 0;
+      var sign = s.charAt(0) === "-" ? -1 : 1;
+      var parts = s.replace(/^[+-]/, "").split(":");
+      var h = parseInt(parts[0], 10) || 0, mi = parseInt(parts[1], 10) || 0,
+          se = parseInt(parts[2], 10) || 0;
+      return sign * (h * 3600 + mi * 60 + se) * 1000;
+    }
+    function qualifyingModel(data, m, cursorMs) {
+      if (!data || data.session_type !== "Qualifying") return null;
+      var rc = (data.race_control || []).slice().sort(function (a, b) { return ms(a.date) - ms(b.date); });
+      var phases = {};
+      rc.forEach(function (msg) {
+        if (msg.category !== "SessionStatus" || !msg.qualifying_phase) return;
+        var key = (msg.message && msg.message.indexOf("STARTED") >= 0) ? "start"
+          : (msg.message && msg.message.indexOf("FINISHED") >= 0) ? "end" : null;
+        if (!key) return;
+        var q = msg.qualifying_phase;
+        if (!phases[q]) phases[q] = { start: null, end: null };
+        phases[q][key] = ms(msg.date);
+      });
+      var startedPhases = Object.keys(phases)
+        .filter(function (q) { return phases[q].start !== null && phases[q].start <= cursorMs; })
+        .map(function (q) { return { q: Number(q), start: phases[q].start }; })
+        .sort(function (a, b) { return a.start - b.start; });
+      function lapPhase(l) {
+        if (l.date_start === null) return null;
+        var raw = ms(l.date_start), q = null;
+        startedPhases.forEach(function (sp) { if (raw >= sp.start) q = sp.q; });
+        return q;
+      }
+      // Deletions. "TIME m:ss.sss DELETED" matches on lap_duration
+      // (race control's lap numbers are OpenF1's + 1, so they are not
+      // used); "LAP DELETED ... hh:mm:ss" (session-local time) matches
+      // the lap whose span contains that moment. Candidates are laps
+      // with a duration whose effective start is <= the message time —
+      // a deletion counts even while the lap is still running.
+      var offMs = parseGmtOffsetMs(data.gmt_offset);
+      var deleted = new Map();
+      rc.forEach(function (msg) {
+        var t = ms(msg.date);
+        if (!isFinite(t) || t > cursorMs || !msg.message) return;
+        var mt = DELETION_RE.exec(msg.message);
+        if (!mt) return;
+        var drv = Number(mt[1]);
+        var laps = (m.lapsByDriver.get(drv) || []).filter(function (l) {
+          var es = m.effStartOf(l);
+          return l.lap_duration !== null && es !== null && es <= t;
+        });
+        var hit = null;
+        if (mt[2] !== undefined) {
+          var dur = Number(mt[2]) * 60 + Number(mt[3]);
+          var cands = laps.filter(function (l) { return Math.abs(l.lap_duration - dur) < 0.0005; });
+          hit = cands.length > 0 ? cands[cands.length - 1] : null;
+        } else {
+          var lt = LOCAL_TIME_RE.exec(msg.message.slice(mt.index + mt[0].length));
+          if (lt) {
+            var local = new Date(t + offMs);
+            var moment = Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate(),
+              Number(lt[1]), Number(lt[2]), Number(lt[3])) - offMs;
+            if (moment > t) moment -= 86400000;
+            laps.forEach(function (l) {
+              var es = m.effStartOf(l);
+              if (es <= moment && moment <= es + l.lap_duration * 1000) hit = l;
+            });
+          }
+        }
+        if (hit) {
+          if (!deleted.has(drv)) deleted.set(drv, new Set());
+          deleted.get(drv).add(hit.lap_number);
+        }
+      });
+      return { phases: phases, lapPhase: lapPhase, deleted: deleted };
+    }
+
     // Tower rows at the cursor. [FIX 1] a driver with no position-feed
     // entry keeps position=null and renders "—" — never a made-up
     // sequential number.
     function computeRows(m, data, cursorMs) {
+      var qm = (typeof qualifyingModel === "function") ? qualifyingModel(data, m, cursorMs) : null;
       var posAt = new Map(), i, p;
       for (i = 0; i < m.positionsSorted.length; i++) {
         p = m.positionsSorted[i];
@@ -1278,10 +1367,21 @@ table.official-tower tr.inpit td.pos { color:#ffd12e; }
         var laps = m.lapsByDriver.get(driver.driver_number) || [];
         var done = laps.filter(function (l) { return completedAt(m, l, cursorMs); });
         var lastLap = done.length > 0 ? done[done.length - 1] : null;
+        // Qualifying: deleted laps are excluded from BEST and from the
+        // per-phase bests; LAST still shows the lap, flagged deleted.
+        var delSet = qm ? qm.deleted.get(driver.driver_number) : null;
         var bestLap = null;
+        var qBests = qm ? { 1: null, 2: null, 3: null } : null;
         done.forEach(function (l) {
-          if (l.lap_duration !== null && (bestLap === null || l.lap_duration < bestLap)) bestLap = l.lap_duration;
+          if (l.lap_duration === null) return;
+          if (delSet && delSet.has(l.lap_number)) return;
+          if (bestLap === null || l.lap_duration < bestLap) bestLap = l.lap_duration;
+          if (qm) {
+            var lq = qm.lapPhase(l);
+            if (lq !== null && (qBests[lq] === null || l.lap_duration < qBests[lq])) qBests[lq] = l.lap_duration;
+          }
         });
+        var lastDeleted = !!(qm && lastLap && delSet && delSet.has(lastLap.lap_number));
         var started = laps.filter(function (l) { return l.date_start !== null && ms(l.date_start) <= cursorMs; });
         var currentLapNum = started.length > 0 ? started[started.length - 1].lap_number : 0;
         // GAS Lap 1 edge: first car out has date_start=null on Lap 1;
@@ -1348,6 +1448,7 @@ table.official-tower tr.inpit td.pos { color:#ffd12e; }
           curSectors: revealed.values, curSectorKinds: curSectorKinds,
           curSectorEnds: revealed.ends,
           curDerived: revealed.derived || [false, false, false],
+          qBests: qBests, lastDeleted: lastDeleted, outTag: null,
           intAgeSec: intAgeSec, gapStale: gapStale,
           gap: null, interval: null, currentLapNum: currentLapNum,
           stint: stint, tyreAge: tyreAge,
@@ -1355,6 +1456,22 @@ table.official-tower tr.inpit td.pos { color:#ffd12e; }
           stops: stops
         };
       });
+      // Qualifying elimination (reference rule): once a phase has
+      // finished, a driver whose position-feed position is below the
+      // cut is out of that phase. Q1 cut = P(n-6), Q2 cut = P(n-12)
+      // for n cars (22 cars: P16 / P10). First phase that eliminates
+      // the driver wins.
+      if (qm) {
+        var nCars = data.drivers.length;
+        var cuts = { 1: nCars - 6, 2: nCars - 12 };
+        [1, 2].forEach(function (q) {
+          var ph = qm.phases[q];
+          if (!ph || ph.end === null || ph.end > cursorMs) return;
+          out.forEach(function (r) {
+            if (!r.outTag && r.position !== null && r.position > cuts[q]) r.outTag = "Q" + q;
+          });
+        });
+      }
       out.sort(function (a, b) {
         if (a.position !== null && b.position !== null) return a.position - b.position;
         if (a.position !== null) return -1;
@@ -1686,9 +1803,10 @@ table.official-tower tr.inpit td.pos { color:#ffd12e; }
           html += '<span class="cbar' + (isFerrari(d) ? " wide" : "") + '" style="background:' + teamColor(d) + '"></span>';
           html += '<span class="acr-cell"><span class="acr">' + esc(d.name_acronym) + "</span>" +
             (r.pitOut ? '<span class="mini-tag out">OUT</span>' : "") +
+            (r.outTag ? '<span class="mini-tag out">' + r.outTag + "敗退</span>" : "") +
             (isFastest ? '<span class="mini-tag fl">FL</span>' : "") + "</span>";
           html += '<span class="best only-sm" style="' + (isFastest ? "color:var(--purple)" : "") + '">' + fmtLap(r.bestLap) + "</span>";
-          html += '<span class="last only-sm">' + fmtLap(r.lastLap ? r.lastLap.lap_duration : null) + "</span>";
+          html += '<span class="last only-sm">' + fmtLap(r.lastLap ? r.lastLap.lap_duration : null) + (r.lastDeleted ? " D" : "") + "</span>";
           for (var si = 0; si < 3; si++) {
             var v = r.curSectors[si], kind = r.curSectorKinds[si] || "none";
             var fresh = sectorFresh(r.curSectorEnds[si], v);
@@ -1708,7 +1826,7 @@ table.official-tower tr.inpit td.pos { color:#ffd12e; }
           // mobile sub-line: BEST/LAST + live sectors always visible
           html += '<span class="sub-line"><span>BEST <span class="v" style="' +
             (isFastest ? "color:var(--purple)" : "") + '">' + fmtLap(r.bestLap) + '</span></span>' +
-            '<span>LAST <span class="v">' + fmtLap(r.lastLap ? r.lastLap.lap_duration : null) + '</span></span>' +
+            '<span>LAST <span class="v">' + fmtLap(r.lastLap ? r.lastLap.lap_duration : null) + (r.lastDeleted ? " D" : "") + '</span></span>' +
             '<span class="sects">';
           for (var sj = 0; sj < 3; sj++) {
             var v2 = r.curSectors[sj], kind2 = r.curSectorKinds[sj] || "none";
@@ -1799,6 +1917,16 @@ table.official-tower tr.inpit td.pos { color:#ffd12e; }
         '<div><div class="lbl">ギア / 回転数 / DRS</div><div class="val">' +
           (latestCar ? latestCar.n_gear + " / " + latestCar.rpm + " / " + (latestCar.drs !== null && latestCar.drs >= 10 ? "ON" : "—") : "—") +
         "</div></div></div>";
+
+      if (selRow && selRow.qBests) {
+        h += '<div class="block"><div class="sect-label">予選フェーズ別ベスト（削除されたラップは除く）' +
+          (selRow.outTag ? ' ・ <span style="color:var(--yellow);font-weight:700">' + selRow.outTag + "で敗退</span>" : "") +
+          '</div><div class="sect-grid">' +
+          [1, 2, 3].map(function (q) {
+            return '<div class="sect-box"><div class="top"><span class="nm">Q' + q + '</span></div>' +
+              '<div class="vl' + (selRow.qBests[q] === null ? " dimv" : "") + '">' + fmtLap(selRow.qBests[q]) + "</div></div>";
+          }).join("") + "</div></div>";
+      }
 
       if (selRow) {
         h += '<div class="block"><div class="sect-label">現在のラップのセクター（Lap ' +
