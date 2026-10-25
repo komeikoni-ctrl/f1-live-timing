@@ -109,6 +109,26 @@
         background: var(--accent); border-color: var(--accent); color: #fff;
         font-weight: 700;
       }
+      .tower-row .gap.gap-stale { opacity: .45; }
+      .auth-settings { position: relative; }
+      .auth-settings summary { list-style: none; cursor: pointer; }
+      .auth-settings summary::-webkit-details-marker { display: none; }
+      .auth-pop {
+        position: absolute; right: 0; top: calc(100% + 6px); z-index: 60;
+        width: 330px; max-width: 88vw; text-align: left;
+        background: var(--surface2); border: 1px solid var(--border); border-radius: 8px;
+        padding: 12px; box-shadow: 0 12px 32px rgba(0,0,0,.55);
+      }
+      .auth-pop label { display: block; font-size: 12px; font-weight: 700; margin-bottom: 6px; }
+      .auth-pop input {
+        width: 100%; box-sizing: border-box; margin-top: 4px;
+        border: 1px solid var(--border); border-radius: 4px;
+        background: var(--bg, #0b0d10); color: var(--text);
+        padding: 6px 8px; font-size: 13px; font-family: var(--mono);
+      }
+      .auth-pop .auth-hint { font-size: 11px; line-height: 1.5; color: var(--dim); margin: 8px 0; }
+      .auth-pop .auth-row { display: flex; gap: 8px; align-items: center; }
+      .auth-pop .auth-state { font-size: 11px; color: var(--dim); }
       .transport { margin-top: 8px; }
       .cursor-clock { font-family: var(--mono); font-size: 14px; font-variant-numeric: tabular-nums; }
       .cursor-clock .dim { color: var(--dim); margin-left: 8px; }
@@ -419,6 +439,19 @@ table.official-tower tr.inpit td.pos { color:#ffd12e; }
             <select class="session-select" id="sessionSelect" aria-label="セッション選択"></select>
             <button type="button" class="btn" id="refreshBtn" aria-label="データを更新">↻ 更新</button>
             <button type="button" class="btn" id="officialBtn">📡 公式ライブ</button>
+            <details class="auth-settings" id="authSettings">
+              <summary class="btn" aria-label="OpenF1認証設定">🔑 トークン</summary>
+              <div class="auth-pop">
+                <label for="authTokenInput">OpenF1 アクセストークン（任意）</label>
+                <input type="password" id="authTokenInput" autocomplete="off" spellcheck="false" placeholder="access_token を貼り付け" />
+                <p class="auth-hint">ライブセッション中はOpenF1の認証が必要です。OpenF1からメールで届いたユーザー名/パスワードを使い、<span class="mono">POST https://api.openf1.org/token</span> で取得した access_token（有効1時間）を貼り付けてください。トークンはこの端末の localStorage にのみ保存され、リクエスト時に Authorization: Bearer ヘッダーで送信されます。</p>
+                <div class="auth-row">
+                  <button type="button" class="btn" id="authSaveBtn">保存</button>
+                  <button type="button" class="btn" id="authClearBtn">削除</button>
+                  <span class="auth-state" id="authState"></span>
+                </div>
+              </div>
+            </details>
           </div>
         </div>
         <div class="hdr-row transport">
@@ -497,7 +530,7 @@ table.official-tower tr.inpit td.pos { color:#ffd12e; }
           <p class="tower-note">
             S1/S2/S3は現在走行中ラップのライブセクターで、車が各セクターを通過した順に表示されます（色は通過時点の判定：紫=全体ベスト、緑=自己ベスト、黄=自己ベストより遅い）。
             INTは前車との差、GAPはリーダーとの差（レース時はintervals実測、プラクティス時はベストラップ差）。PITはカーソル時点までのピットレーン通過回数（/pit実測、セッション開始時のガレージ退出を含む）。
-            FLはセッション最速ラップ。順位はpositionフィードの実測値で、無い場合は「—」です。データ出典：OpenF1 API（api.openf1.org）
+            FLはセッション最速ラップ。順位はpositionフィードの実測値で、無い場合は「—」です。S1に「*」が付いた値はラップタイムから逆算した値です。GAPが薄く表示されている車はインターバル情報の更新が止まっています（古い値の可能性があります）。データ出典：OpenF1 API（api.openf1.org）
           </p>
         </section>
       </main>
@@ -581,18 +614,45 @@ table.official-tower tr.inpit td.pos { color:#ffd12e; }
 
     function sleep(t) { return new Promise(function (r) { setTimeout(r, t); }); }
 
+    // Optional OpenF1 access token. Official scheme
+    // (https://openf1.org/auth.html): exchange the username/password
+    // OpenF1 emails to sponsors at POST https://api.openf1.org/token
+    // for an access_token (valid 1 hour) and send it as
+    // "Authorization: Bearer <token>". There is NO api_key query
+    // parameter in the official scheme. The token is stored ONLY in
+    // localStorage on this device and never sent anywhere else.
+    var AUTH_STORAGE_KEY = "openf1AccessToken";
+    function authToken() {
+      try { return localStorage.getItem(AUTH_STORAGE_KEY) || ""; } catch (e) { return ""; }
+    }
+    function setAuthToken(v) {
+      try {
+        if (v) localStorage.setItem(AUTH_STORAGE_KEY, v);
+        else localStorage.removeItem(AUTH_STORAGE_KEY);
+      } catch (e) { /* storage unavailable: token simply not kept */ }
+      apiCache.clear();
+    }
+
     async function fetchJson(path, ttlMs) {
-      var hit = apiCache.get(path);
+      var cacheKey = path + (authToken() ? "|auth" : "");
+      var hit = apiCache.get(cacheKey);
       if (hit && hit.exp > Date.now()) return { status: "ok", data: hit.data };
       var url = BASE + path;
       var res = null, attempt;
       for (attempt = 0; attempt < 2; attempt++) {
         try {
-          res = await fetch(url, { headers: { accept: "application/json" } });
+          var hdrs = { accept: "application/json" };
+          var tok = authToken();
+          if (tok) hdrs.Authorization = "Bearer " + tok;
+          res = await fetch(url, { headers: hdrs });
         } catch (e) {
           res = null;
         }
         if (res && res.status === 404) return { status: "empty" };
+        // 401 = live-session restriction (or a bad/expired token):
+        // a distinct status so the UI can ask for a token instead of
+        // blaming a generic network failure. Retrying cannot help.
+        if (res && res.status === 401) return { status: "auth", code: 401 };
         if (res && res.status === 429) {
           rateLimitUntil = Date.now() + 30000;
           backoffMult = Math.min(8, backoffMult * 2);
@@ -607,7 +667,7 @@ table.official-tower tr.inpit td.pos { color:#ffd12e; }
       if (!res || !res.ok) return { status: "error", code: res ? res.status : 0 };
       var data;
       try { data = await res.json(); } catch (e) { return { status: "error", code: -1 }; }
-      apiCache.set(path, { exp: Date.now() + ttlMs, data: data });
+      apiCache.set(cacheKey, { exp: Date.now() + ttlMs, data: data });
       if (apiCache.size > 400) {
         var oldest = apiCache.keys().next().value;
         if (oldest) apiCache.delete(oldest);
@@ -635,7 +695,7 @@ table.official-tower tr.inpit td.pos { color:#ffd12e; }
       var latestR = await fetchJson("/sessions?session_key=latest", 30000);
       var latestRaw = asArray(latestR);
       var latest = latestRaw[0];
-      if (!latest) return { sessions: [], latest_key: 0 };
+      if (!latest) return { sessions: [], latest_key: 0, authError: latestR.status === "auth" };
       var meetingKey = num(latest.meeting_key) || 0;
       var meetingR = await fetchJson("/sessions?meeting_key=" + meetingKey, 30000);
       var meetingRaw = asArray(meetingR);
@@ -654,7 +714,7 @@ table.official-tower tr.inpit td.pos { color:#ffd12e; }
         };
       });
       rows.sort(function (a, b) { return a.date_start < b.date_start ? -1 : 1; });
-      return { sessions: rows, latest_key: num(latest.session_key) || 0 };
+      return { sessions: rows, latest_key: num(latest.session_key) || 0, authError: meetingR.status === "auth" };
     }
 
     // One round of session data. Each endpoint is isolated: a 404 or a
@@ -671,7 +731,11 @@ table.official-tower tr.inpit td.pos { color:#ffd12e; }
       if (partial) {
         var sinceMs = ms(sinceIso);
         tsFilter = "&date%3E=" + encodeURIComponent(new Date(sinceMs - 5000).toISOString());
-        lapFilter = "&date_start%3E=" + encodeURIComponent(new Date(sinceMs - 240000).toISOString());
+        // 30-minute lookback: a lap that started long ago (long pit-out /
+        // garage lap, which can run 800s+) but only completes or is
+        // corrected now must still be re-fetched and merged, not stay
+        // stale until a full reload (was 240s — too short).
+        lapFilter = "&date_start%3E=" + encodeURIComponent(new Date(sinceMs - 1800000).toISOString());
       }
       var sessType = (typeof S !== "undefined" && S.session) ? S.session.session_type : null;
       var wantIntervals = sessType === null || sessType === "Race";
@@ -687,7 +751,8 @@ table.official-tower tr.inpit td.pos { color:#ffd12e; }
           : Promise.resolve({ status: "empty" }),
         fetchJson("/pit?session_key=" + k + tsFilter, 5000)
       ]);
-      var anyError = rs.some(function (r) { return r.status === "error"; });
+      var anyError = rs.some(function (r) { return r.status === "error" || r.status === "auth"; });
+      var anyAuth = rs.some(function (r) { return r.status === "auth"; });
       var coreError = rs[0].status === "error" || rs[1].status === "error" || rs[3].status === "error";
       var drivers = asArray(rs[0]).map(function (r) {
         return {
@@ -763,7 +828,8 @@ table.official-tower tr.inpit td.pos { color:#ffd12e; }
         drivers: drivers, laps: laps, stints: stints, positions: positions,
         race_control: race_control, weather: weather, intervals: intervals,
         pits: pits, fetched_at: new Date().toISOString(), partial: partial,
-        error: anyError, coreError: coreError
+        error: anyError, coreError: coreError, authError: anyAuth,
+        session_type: sessType, gmt_offset: (typeof S !== "undefined" && S.session) ? (S.session.gmt_offset || null) : null
       };
     }
 
@@ -851,7 +917,10 @@ table.official-tower tr.inpit td.pos { color:#ffd12e; }
         intervals: (prev.intervals === null && next.intervals === null) ? null :
           mergeBy(prev.intervals || [], next.intervals || [], function (iv) { return iv.driver_number + ":" + iv.date; }),
         pits: mergeBy(prev.pits || [], next.pits || [], function (p) { return p.driver_number + ":" + p.date; }),
-        fetched_at: next.fetched_at, partial: false, error: next.error
+        fetched_at: next.fetched_at, partial: false, error: next.error,
+        coreError: next.coreError, authError: next.authError,
+        session_type: next.session_type !== undefined ? next.session_type : prev.session_type,
+        gmt_offset: next.gmt_offset !== undefined ? next.gmt_offset : prev.gmt_offset
       };
     }
 
@@ -920,7 +989,8 @@ table.official-tower tr.inpit td.pos { color:#ffd12e; }
     // ------------------------------------------------------------------
     var S = {
       sessions: [], latestKey: 0, sessionKey: null, session: null,
-      data: null, dataError: false,
+      data: null, dataError: false, authError: false,
+      manualSelect: false, // true once the user picks a session by hand
       selected: 16, focusLapNum: null,
       playing: false, speed: 8, ready: false, // [FIX 5] no autoplay pre-ready
       cursorRef: 0,          // absolute epoch ms, advanced per frame
@@ -972,6 +1042,29 @@ table.official-tower tr.inpit td.pos { color:#ffd12e; }
       S.data.pits.forEach(function (p) { m = Math.max(m, ms(p.date)); });
       return m;
     }
+    // [FIX 10] Replay counterpart of [FIX 2]: the newest timestamp
+    // among data visible AT THE CURSOR. newestDataMs() scans the whole
+    // loaded session, so in replay the header used to advertise the
+    // session-end time while the cursor sat at 0:00. LIVE keeps the
+    // lag-vs-now behaviour of newestDataMs().
+    function cursorDataMs(cursorMs) {
+      if (!S.data) return 0;
+      var mx = 0;
+      function upd(t) { if (isFinite(t) && t <= cursorMs && t > mx) mx = t; }
+      S.data.positions.forEach(function (p) { upd(ms(p.date)); });
+      S.data.race_control.forEach(function (r) { upd(ms(r.date)); });
+      S.data.weather.forEach(function (w) { upd(ms(w.date)); });
+      if (S.data.intervals) S.data.intervals.forEach(function (iv) { upd(ms(iv.date)); });
+      S.data.pits.forEach(function (p) { upd(ms(p.date)); });
+      S.data.laps.forEach(function (l) {
+        if (l.date_start === null) return;
+        var st = ms(l.date_start);
+        if (model) { var es = model.effStartOf(l); if (es !== null) st = es; }
+        upd(st);
+        if (l.lap_duration !== null) upd(st + l.lap_duration * 1000);
+      });
+      return mx;
+    }
 
     // ------------------------------------------------------------------
     // Per-data precomputation (rebuilt only when the data object changes)
@@ -987,18 +1080,23 @@ table.official-tower tr.inpit td.pos { color:#ffd12e; }
         arr.sort(function (a, b) { return a.lap_number - b.lap_number; });
       });
       // Pit-out correction: effective start = min(recorded start,
-      // previous lap's effective start + its duration). OpenF1 stamps a
-      // pit-out lap's date_start at pit-exit while its lap_duration is
-      // timed from the previous line crossing (garage time included);
-      // without this, completion lands up to ~842s late (FP2: 62 laps).
-      // Verified: Hamilton FP2 Lap 8 completes at 1468.9s, not 1824s.
+      // previous lap's effective start + its duration) — applied ONLY
+      // to pit-out laps. OpenF1 stamps a pit-out lap's date_start at
+      // pit-exit while its lap_duration is timed from the previous line
+      // crossing (garage time included); without this, completion lands
+      // up to ~842s late (FP2: 62 laps). Verified: Hamilton FP2 Lap 8
+      // completes at 1468.9s, not 1824s.
+      // [FIX 9] Chaining the same min() through EVERY lap (the old code)
+      // pulls ordinary laps early by sub-second jitter each lap — up to
+      // 1.21s by lap 48 in race data — so sector reveals and lap
+      // completions fired early. Ordinary laps use date_start as-is.
       var effStartByLap = new Map();
       lapsByDriver.forEach(function (arr, drv) {
         var prevEff = null, prevDur = null, prevNum = null;
         arr.forEach(function (l) {
           var raw = l.date_start !== null ? ms(l.date_start) : null;
           var eff = raw;
-          if (raw !== null && prevEff !== null && prevDur !== null &&
+          if (l.is_pit_out_lap === true && raw !== null && prevEff !== null && prevDur !== null &&
               prevNum !== null && prevNum === l.lap_number - 1) {
             eff = Math.min(raw, prevEff + prevDur * 1000);
           }
@@ -1033,7 +1131,7 @@ table.official-tower tr.inpit td.pos { color:#ffd12e; }
       };
       // Sector end times: forward when S1 exists; otherwise (67 FP2 laps
       // have S1=null but S2/S3 present) back-computed from the lap end so
-      // S2/S3 still reveal at the right instant. The S1 value stays "—".
+      // S2/S3 still reveal at the right instant.
       m.sectorEndsOf = function (l) {
         var ends = [null, null, null];
         var start = m.effStartOf(l), end = m.effEndOf(l);
@@ -1053,6 +1151,16 @@ table.official-tower tr.inpit td.pos { color:#ffd12e; }
         }
         if (ends[1] === null && ends[0] !== null && s2 !== null) ends[1] = ends[0] + s2 * 1000;
         return ends;
+      };
+      // [FIX 7] Derived (backward) S1: when duration_sector_1 is null
+      // but the lap duration, S2 and S3 are known, S1 = lap - S2 - S3.
+      // Its reveal instant is the back-computed S1 end above
+      // (lap end - S3 - S2). Displayed with a "*" marker. Pit-out laps'
+      // derived S1 includes the garage time (same as the reference).
+      m.derivedS1Of = function (l) {
+        if (l.duration_sector_1 !== null || l.lap_duration === null ||
+            l.duration_sector_2 === null || l.duration_sector_3 === null) return null;
+        return Math.round((l.lap_duration - l.duration_sector_2 - l.duration_sector_3) * 1000) / 1000;
       };
       // Sector colours judged AT THE MOMENT EACH SECTOR IS CROSSED:
       // walk every sector-crossing event in order and colour against the
@@ -1105,8 +1213,8 @@ table.official-tower tr.inpit td.pos { color:#ffd12e; }
     // gated by its OWN end time (forward or back-computed), so sectors
     // appear one by one in crossing order, never all at lap completion.
     function revealedSectors(m, l, atMs) {
-      var values = [null, null, null], ends = [null, null, null];
-      if (!l || m.effStartOf(l) === null) return { values: values, ends: ends };
+      var values = [null, null, null], ends = [null, null, null], derived = [false, false, false];
+      if (!l || m.effStartOf(l) === null) return { values: values, ends: ends, derived: derived };
       var secs = [l.duration_sector_1, l.duration_sector_2, l.duration_sector_3];
       var allEnds = m.sectorEndsOf(l);
       for (var i = 0; i < 3; i++) {
@@ -1115,7 +1223,14 @@ table.official-tower tr.inpit td.pos { color:#ffd12e; }
           values[i] = secs[i];
         }
       }
-      return { values: values, ends: ends };
+      // [FIX 7] a null S1 with lap/S2/S3 known is shown as the derived
+      // value once its back-computed end time is reached.
+      if (values[0] === null && ends[0] !== null && ends[0] !== undefined && ends[0] <= atMs + 1 &&
+          typeof m.derivedS1Of === "function") {
+        var dS1 = m.derivedS1Of(l);
+        if (dS1 !== null) { values[0] = dS1; derived[0] = true; }
+      }
+      return { values: values, ends: ends, derived: derived };
     }
     function bestsAtCursor(m, data, cursorMs) {
       var overall = [null, null, null], personal = new Map();
@@ -1147,8 +1262,16 @@ table.official-tower tr.inpit td.pos { color:#ffd12e; }
       if (m.intervalsSorted) {
         for (i = 0; i < m.intervalsSorted.length; i++) {
           var iv = m.intervalsSorted[i];
-          if (ms(iv.date) <= cursorMs) intAt.set(iv.driver_number, { gap: iv.gap_to_leader, int: iv.interval });
-          else break;
+          if (ms(iv.date) > cursorMs) break;
+          // [FIX 8] per-field merge: a null field in the newest row
+          // keeps the previous non-null value (the feed emits null
+          // gap/interval fields regularly — 121/219 rows in one race);
+          // the row's timestamp still advances for stale/age checks.
+          var curIv = intAt.get(iv.driver_number) || { gap: null, int: null, t: 0 };
+          if (iv.gap_to_leader !== null && iv.gap_to_leader !== undefined) curIv.gap = iv.gap_to_leader;
+          if (iv.interval !== null && iv.interval !== undefined) curIv.int = iv.interval;
+          curIv.t = ms(iv.date);
+          intAt.set(iv.driver_number, curIv);
         }
       }
       var out = data.drivers.map(function (driver) {
@@ -1178,7 +1301,7 @@ table.official-tower tr.inpit td.pos { color:#ffd12e; }
         var kinds = lastLap ? (m.lapKinds.get(driver.driver_number + ":" + lastLap.lap_number) || ["none", "none", "none"]) : ["none", "none", "none"];
         var currentFinished = current !== null && completedAt(m, current, cursorMs);
         var revealed = currentFinished
-          ? { values: [null, null, null], ends: [null, null, null] }
+          ? { values: [null, null, null], ends: [null, null, null], derived: [false, false, false] }
           : revealedSectors(m, current, cursorMs);
         var curSectorKinds = current
           ? (m.lapKinds.get(driver.driver_number + ":" + current.lap_number) || ["none", "none", "none"])
@@ -1207,12 +1330,25 @@ table.official-tower tr.inpit td.pos { color:#ffd12e; }
           return pp.driver_number === driver.driver_number && ms(pp.date) <= cursorMs;
         }).length;
         var stops = (data.pits || []).length > 0 ? pitCount : Math.max(0, startedStints.length - 1);
+        // Stale-interval marking (conservative, display-only): the
+        // newest intervals row is >120s old at the cursor AND no lap
+        // has started since that row — the car is very likely stopped
+        // (retired), so its frozen gap must not look current. The
+        // value itself is left untouched.
+        var ivRec = intAt.get(driver.driver_number);
+        var intAgeSec = (ivRec && ivRec.t > 0) ? (cursorMs - ivRec.t) / 1000 : null;
+        var lapAfterIv = ivRec ? laps.some(function (l) {
+          return l.date_start !== null && ms(l.date_start) > ivRec.t;
+        }) : false;
+        var gapStale = !!(ivRec && intAgeSec !== null && intAgeSec > 120 && !lapAfterIv);
         return {
           driver: driver,
           position: posAt.has(driver.driver_number) ? posAt.get(driver.driver_number) : null,
           bestLap: bestLap, lastLap: lastLap, sectorKinds: kinds,
           curSectors: revealed.values, curSectorKinds: curSectorKinds,
           curSectorEnds: revealed.ends,
+          curDerived: revealed.derived || [false, false, false],
+          intAgeSec: intAgeSec, gapStale: gapStale,
           gap: null, interval: null, currentLapNum: currentLapNum,
           stint: stint, tyreAge: tyreAge,
           pitOut: current !== null && current !== undefined ? current.is_pit_out_lap === true : false,
@@ -1467,8 +1603,9 @@ table.official-tower tr.inpit td.pos { color:#ffd12e; }
       });
       $("circuitName").textContent = session.circuit_short_name || "";
 
-      // [FIX 2] freshness from the newest data timestamp on screen.
-      var nd = newestDataMs();
+      // [FIX 2] freshness from the newest data timestamp on screen;
+      // [FIX 10] in replay that means at-or-before the cursor.
+      var nd = live ? newestDataMs() : cursorDataMs(cursorMs);
       var lagSec = nd > 0 ? Math.max(0, (S.nowMs - nd) / 1000) : null;
       var stale = live && (S.dataError || (lagSec !== null && lagSec > 20));
       var fi = $("freshInfo");
@@ -1481,7 +1618,14 @@ table.official-tower tr.inpit td.pos { color:#ffd12e; }
       } else { fi.textContent = ""; fi.classList.remove("stale"); }
 
       var staleBanner = $("staleBanner");
-      if (S.dataError && data) {
+      if (S.authError && data) {
+        staleBanner.textContent = authToken()
+          ? "⚠ OpenF1の認証に失敗しました（アクセストークンが無効か期限切れの可能性があります）。表示は前回取得した時点のものです（データ時刻 " +
+            (nd > 0 ? jstTime.format(nd) : "—") + " JST）。"
+          : "⚠ ライブセッション中はOpenF1のAPIキー（アクセストークン）が必要です。ヘッダーの「🔑 トークン」から設定してください。表示は前回取得した時点のものです（データ時刻 " +
+            (nd > 0 ? jstTime.format(nd) : "—") + " JST）。";
+        staleBanner.classList.remove("hidden");
+      } else if (S.dataError && data) {
         staleBanner.textContent = "⚠ データの更新に失敗しました（通信障害またはレート制限）。表示は前回取得した時点のものです（データ時刻 " +
           (nd > 0 ? jstTime.format(nd) : "—") + " JST）。";
         staleBanner.classList.remove("hidden");
@@ -1550,7 +1694,7 @@ table.official-tower tr.inpit td.pos { color:#ffd12e; }
             var fresh = sectorFresh(r.curSectorEnds[si], v);
             html += '<span class="sect only-sm" style="color:' + (v !== null && v !== undefined ? sectorColor(kind) : "var(--dim)") +
               (fresh ? ";background:color-mix(in srgb, " + sectorColor(kind) + " 32%, transparent)" : "") + '">' +
-              (v !== null && v !== undefined ? fmtSector(v) : "—") + "</span>";
+              (v !== null && v !== undefined ? fmtSector(v) + (r.curDerived && r.curDerived[si] ? "*" : "") : "—") + "</span>";
           }
           html += '<span class="tyre only-sm">' + (ts ?
             '<span class="tyre-chip" style="background:' + ts.bg + ";color:" + ts.fg + '">' + ts.label + '</span>' +
@@ -1558,7 +1702,9 @@ table.official-tower tr.inpit td.pos { color:#ffd12e; }
             '<span style="color:var(--dim)">—</span>') + "</span>";
           html += '<span class="pit only-sm">' + (r.stops > 0 ? r.stops : "—") + "</span>";
           html += '<span class="int only-sm">' + (r.position === 1 ? "—" : fmtGap(r.interval)) + "</span>";
-          html += '<span class="gap">' + (r.position === 1 ? "—" : fmtGap(r.gap)) + "</span>";
+          html += '<span class="gap' + (r.gapStale ? " gap-stale" : "") + '"' +
+            (r.gapStale ? ' title="インターバル情報の更新が止まっています（最終更新 約' + Math.round(r.intAgeSec) + '秒前）"' : "") + ">" +
+            (r.position === 1 ? "—" : fmtGap(r.gap)) + "</span>";
           // mobile sub-line: BEST/LAST + live sectors always visible
           html += '<span class="sub-line"><span>BEST <span class="v" style="' +
             (isFastest ? "color:var(--purple)" : "") + '">' + fmtLap(r.bestLap) + '</span></span>' +
@@ -1570,7 +1716,7 @@ table.official-tower tr.inpit td.pos { color:#ffd12e; }
             html += '<span class="s" style="' + (fresh2 ? "background:color-mix(in srgb, " + sectorColor(kind2) + " 32%, transparent)" : "") +
               '">S' + (sj + 1) + ' <span style="color:' +
               (v2 !== null && v2 !== undefined ? sectorColor(kind2) : "var(--dim)") + '">' +
-              (v2 !== null && v2 !== undefined ? fmtSector(v2) : "—") + "</span></span>";
+              (v2 !== null && v2 !== undefined ? fmtSector(v2) + (r.curDerived && r.curDerived[sj] ? "*" : "") : "—") + "</span></span>";
           }
           html += "</span>" + (ts ?
             '<span class="tyre"><span class="tyre-chip" style="background:' + ts.bg + ";color:" + ts.fg + '">' + ts.label +
@@ -1668,23 +1814,24 @@ table.official-tower tr.inpit td.pos { color:#ffd12e; }
             (v !== null && v !== undefined && spd ? spd + " km/h" : "") + "</span></div>" +
             '<div class="vl' + (v === null || v === undefined ? " dimv" : "") + '" style="' +
             (v !== null && v !== undefined ? "color:" + sectorColor(kind) : "") + '">' +
-            (v !== null && v !== undefined ? fmtSector(v) : "—") + "</div></div>";
+            (v !== null && v !== undefined ? fmtSector(v) + (selRow.curDerived && selRow.curDerived[i] ? "*" : "") : "—") + "</div></div>";
         }
         h += "</div></div>";
       }
 
       if (selLastLap) {
         var lastKinds = selRow ? selRow.sectorKinds : ["none", "none", "none"];
+        var lastS1D = (typeof m.derivedS1Of === "function") ? m.derivedS1Of(selLastLap) : null;
         var lastDefs = [
-          ["S1", selLastLap.duration_sector_1, lastKinds[0], selLastLap.i1_speed],
-          ["S2", selLastLap.duration_sector_2, lastKinds[1], selLastLap.i2_speed],
-          ["S3", selLastLap.duration_sector_3, lastKinds[2], selLastLap.st_speed]
+          ["S1", selLastLap.duration_sector_1 !== null ? selLastLap.duration_sector_1 : lastS1D, lastKinds[0], selLastLap.i1_speed, selLastLap.duration_sector_1 === null && lastS1D !== null],
+          ["S2", selLastLap.duration_sector_2, lastKinds[1], selLastLap.i2_speed, false],
+          ["S3", selLastLap.duration_sector_3, lastKinds[2], selLastLap.st_speed, false]
         ];
         h += '<div class="block"><div class="sect-label">直近ラップのセクター（紫=全体ベスト / 緑=自己ベスト / 黄=自己ベストより遅い）</div><div class="sect-grid">';
         lastDefs.forEach(function (def) {
           h += '<div class="sect-box"><div class="top"><span class="nm">' + def[0] + '</span><span class="sp">' +
             (def[3] ? def[3] + " km/h" : "") + '</span></div><div class="vl" style="color:' + sectorColor(def[2]) + '">' +
-            fmtSector(def[1]) + "</div></div>";
+            fmtSector(def[1]) + (def[4] ? "*" : "") + "</div></div>";
         });
         h += "</div></div>";
       }
@@ -1718,19 +1865,24 @@ table.official-tower tr.inpit td.pos { color:#ffd12e; }
         var stint = null;
         selStintsAll.forEach(function (s) { if (l.lap_number >= s.lap_start && l.lap_number <= s.lap_end) stint = s; });
         var tyreAge = stint ? stint.tyre_age_at_start + (l.lap_number - stint.lap_start) : null;
-        var sectors, kinds, speeds;
+        var sectors, kinds, speeds, sectorDerived = [false, false, false];
         if (done) {
           sectors = [l.duration_sector_1, l.duration_sector_2, l.duration_sector_3];
+          if (sectors[0] === null && typeof m.derivedS1Of === "function") {
+            var hd = m.derivedS1Of(l);
+            if (hd !== null) { sectors[0] = hd; sectorDerived[0] = true; }
+          }
           kinds = m.lapKinds.get(selNum + ":" + l.lap_number) || ["none", "none", "none"];
           speeds = [l.i1_speed, l.i2_speed, l.st_speed];
         } else {
           var rev = revealedSectors(m, l, cursorMs);
           sectors = rev.values;
+          sectorDerived = rev.derived || [false, false, false];
           kinds = m.lapKinds.get(selNum + ":" + l.lap_number) || ["none", "none", "none"];
           speeds = [sectors[0] !== null ? l.i1_speed : null, sectors[1] !== null ? l.i2_speed : null, null];
         }
         return {
-          lap: l, done: done, sectors: sectors, kinds: kinds, speeds: speeds,
+          lap: l, done: done, sectors: sectors, sectorDerived: sectorDerived, kinds: kinds, speeds: speeds,
           stint: stint, tyreAge: tyreAge,
           isBest: done && l.lap_duration !== null && selBestLap !== null && l.lap_duration <= selBestLap + 1e-9
         };
@@ -1754,7 +1906,8 @@ table.official-tower tr.inpit td.pos { color:#ffd12e; }
             '<span class="laptime" style="' + (hr.isBest ? "color:var(--purple)" : "") + '">' +
             (hr.done ? fmtLap(l.lap_duration) : "—") + "</span>";
           hr.sectors.forEach(function (s, i) {
-            h += '<span style="color:' + sectorColor(hr.kinds[i] || "none") + '">' + fmtSector(s) + "</span>";
+            h += '<span style="color:' + sectorColor(hr.kinds[i] || "none") + '">' + fmtSector(s) +
+              (s !== null && hr.sectorDerived && hr.sectorDerived[i] ? "*" : "") + "</span>";
           });
           h += '<span class="tyre-cell">' + (ts ?
             '<span class="tyre-chip" style="background:' + ts.bg + ";color:" + ts.fg + '">' + ts.label + '</span>' +
@@ -1944,12 +2097,65 @@ table.official-tower tr.inpit td.pos { color:#ffd12e; }
     // ------------------------------------------------------------------
     // Data orchestration
     // ------------------------------------------------------------------
+    // [FIX 11] Session auto-selection. A session counts as live while
+    // now is within [date_start, date_end + 30min grace].
+    function liveSessionOf(sessions) {
+      var now = Date.now(), best = null;
+      sessions.forEach(function (s) {
+        var st = ms(s.date_start), en = ms(s.date_end);
+        if (now >= st && now <= en + 1800000 && (!best || st > ms(best.date_start))) best = s;
+      });
+      return best;
+    }
+    function nextSessionOf(sessions, afterMs) {
+      var best = null;
+      sessions.forEach(function (s) {
+        var st = ms(s.date_start);
+        if (st > afterMs && (!best || st < ms(best.date_start))) best = s;
+      });
+      return best;
+    }
+    // Initial pick: a live session wins; otherwise, if a session of
+    // this meeting starts within the next 60 minutes, prefer it over
+    // the latest completed one, so a page opened just before the race
+    // lands on the Race and the upcoming-session logic takes it live
+    // at the start time with no reload.
+    function pickInitialSessionKey(sessions, latestKey) {
+      var liveS = liveSessionOf(sessions);
+      if (liveS) return liveS.session_key;
+      var now = Date.now();
+      var nextS = nextSessionOf(sessions, now);
+      if (nextS && ms(nextS.date_start) - now <= 3600000) return nextS.session_key;
+      return latestKey || (sessions[0] && sessions[0].session_key) || null;
+    }
+    // Periodic-refresh auto-switch (never after a manual selection):
+    // follow a live session of the same meeting, or — when the shown
+    // session has ended — the meeting's next upcoming session.
+    function autoSwitchSessionKey(sessions) {
+      var liveS = liveSessionOf(sessions);
+      if (liveS) return liveS.session_key;
+      var cur = null;
+      sessions.forEach(function (s) { if (s.session_key === S.sessionKey) cur = s; });
+      var now = Date.now();
+      if (cur && ms(cur.date_end) <= now) {
+        var nextS = nextSessionOf(sessions, now);
+        if (nextS && ms(nextS.date_start) - now <= 86400000) return nextS.session_key;
+      }
+      return null;
+    }
+
     async function loadSessions() {
       var r = await apiGetSessions();
+      S.authError = !!r.authError;
       if (r.sessions.length > 0) {
         S.sessions = r.sessions;
         S.latestKey = r.latest_key;
-        if (S.sessionKey === null) S.sessionKey = r.latest_key || (r.sessions[0] && r.sessions[0].session_key) || null;
+        if (S.sessionKey === null) {
+          S.sessionKey = pickInitialSessionKey(r.sessions, r.latest_key);
+        } else if (!S.manualSelect) {
+          var autoKey = autoSwitchSessionKey(r.sessions);
+          if (autoKey !== null && autoKey !== S.sessionKey) S.sessionKey = autoKey;
+        }
         S.session = null;
         S.sessions.forEach(function (s) { if (s.session_key === S.sessionKey) S.session = s; });
         var sel = $("sessionSelect");
@@ -1965,7 +2171,7 @@ table.official-tower tr.inpit td.pos { color:#ffd12e; }
 
     function onSessionChanged() {
       S.data = null; model = null;
-      S.dataError = false; S.ready = false; S.playing = false;
+      S.dataError = false; S.authError = false; S.ready = false; S.playing = false;
       S.focusLapNum = null;
       S.outline = []; S.bounds = null; S.outlineFracs = null; S.outlineKey = "";
       S.outlineError = false; S.outlineLastTry = 0; S.errRetryAt = 0;
@@ -2001,6 +2207,7 @@ table.official-tower tr.inpit td.pos { color:#ffd12e; }
         var coreErr = !!res.coreError;
         if (since && prev) res = mergeSessionData(prev, res);
         S.data = res;
+        S.authError = !!res.authError;
         // The stale banner means "an update failed; you are seeing older
         // data". A secondary-endpoint hiccup on the very first load —
         // when the tower data itself arrived fine — must not raise it:
@@ -2280,6 +2487,9 @@ table.official-tower tr.inpit td.pos { color:#ffd12e; }
       }
     });
     $("sessionSelect").addEventListener("change", function (e) {
+      // A manual choice always wins: the periodic auto-switch ([FIX 11])
+      // never overrides it.
+      S.manualSelect = true;
       S.sessionKey = Number(e.target.value);
       S.session = null;
       S.sessions.forEach(function (s) { if (s.session_key === S.sessionKey) S.session = s; });
@@ -2291,6 +2501,24 @@ table.official-tower tr.inpit td.pos { color:#ffd12e; }
       loadSessionData(true);
       ensureLocations();
     });
+    (function initAuthSettings() {
+      var input = $("authTokenInput"), save = $("authSaveBtn"),
+          clear = $("authClearBtn"), state = $("authState");
+      if (!input || !save || !clear || !state) return;
+      input.value = authToken();
+      state.textContent = authToken() ? "設定済み" : "未設定";
+      save.addEventListener("click", function () {
+        setAuthToken(input.value.trim());
+        state.textContent = authToken() ? "保存しました" : "未設定";
+        S.authError = false;
+        loadSessions().then(function () { loadSessionData(true); });
+      });
+      clear.addEventListener("click", function () {
+        input.value = "";
+        setAuthToken("");
+        state.textContent = "未設定";
+      });
+    })();
     $("playBtn").addEventListener("click", function () {
       if (!S.ready) return;
       var atEnd = S.elapsed >= durationSec() - 0.5;
@@ -2343,6 +2571,22 @@ table.official-tower tr.inpit td.pos { color:#ffd12e; }
       var ok = false;
       try { ok = await loadSessions(); } catch (e) { ok = false; }
       if (!ok || S.sessions.length === 0) {
+        if (S.authError) {
+          // The header settings are unreachable behind the boot screen,
+          // so offer the same token input here.
+          $("boot").innerHTML = '<p>ライブセッション中のため、OpenF1のデータ取得には認証が必要です。</p>' +
+            '<p style="font-size:12px;line-height:1.6;max-width:520px;margin:8px auto">OpenF1からメールで届いたユーザー名/パスワードを使い、' +
+            'https://api.openf1.org/token で取得したアクセストークン（有効1時間）を入力してください。トークンはこの端末の localStorage にのみ保存されます。</p>' +
+            '<input type="password" id="bootAuthInput" autocomplete="off" spellcheck="false" placeholder="access_token" ' +
+            'style="width:min(420px,86vw);padding:8px;border-radius:4px;border:1px solid #2a2f36;background:#0b0d10;color:#fff;font-family:monospace" />' +
+            '<br><button type="button" class="btn-accent" id="bootAuthSave">トークンを保存して再試行</button>' +
+            '<button type="button" class="btn-accent" style="margin-left:8px" onclick="location.reload()">再読み込み</button>';
+          $("bootAuthSave").addEventListener("click", function () {
+            setAuthToken($("bootAuthInput").value.trim());
+            location.reload();
+          });
+          return;
+        }
         $("boot").innerHTML = '<p>OpenF1からセッション情報を取得できませんでした。</p>' +
           '<button type="button" class="btn-accent" onclick="location.reload()">再試行</button>';
         return;
