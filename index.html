@@ -362,7 +362,41 @@
       .boot p { font-family: var(--mono); font-size: 14px; color: var(--dim); line-height: 1.8; }
       .boot .btn-accent { border-radius: 4px; padding: 8px 16px; font-size: 14px; cursor: pointer; border: none; margin-top: 16px; }
     </style>
-  </head>
+  <style>
+/* ===== Official live feed panel (formula1.com SignalR via relay) ===== */
+.official-panel { margin: 10px 12px 16px; }
+.official-head { display:flex; flex-wrap:wrap; align-items:baseline; gap:8px 14px; margin-bottom:8px; }
+.official-title { font-size:17px; font-weight:700; letter-spacing:.02em; }
+.official-status { font-size:12px; padding:2px 8px; border-radius:999px; background:#2a2f38; color:#e8ecf1; }
+.official-status.live { background:#e10600; color:#fff; font-weight:700; }
+.official-clock { font-variant-numeric:tabular-nums; font-size:15px; font-weight:600; }
+.official-meta { font-size:12px; color:#9aa5b1; }
+.official-tablewrap { overflow-x:auto; border:1px solid #262c36; border-radius:10px; background:#0d1015; }
+table.official-tower { border-collapse:collapse; width:100%; min-width:760px; font-size:13px; font-variant-numeric:tabular-nums; }
+table.official-tower th { text-align:left; font-size:11px; color:#8b95a5; font-weight:600; padding:7px 8px; border-bottom:1px solid #262c36; white-space:nowrap; }
+table.official-tower td { padding:6px 8px; border-bottom:1px solid #1a1f28; white-space:nowrap; color:#e8ecf1; }
+table.official-tower tr.ferrari td { background:rgba(225,6,0,.07); }
+table.official-tower tr.retired td { opacity:.45; }
+table.official-tower tr.inpit td.pos { color:#ffd12e; }
+.official-pos { font-weight:700; width:30px; }
+.official-drv { display:flex; align-items:center; gap:7px; font-weight:700; }
+.official-teambar { width:4px; height:16px; border-radius:2px; display:inline-block; }
+.official-team { font-weight:400; font-size:11px; color:#8b95a5; }
+.sec-pb { color:#37d67a; font-weight:600; }
+.sec-ob { color:#c77dff; font-weight:700; }
+.pit-tag { font-size:10px; font-weight:700; color:#0d1015; background:#ffd12e; border-radius:3px; padding:1px 4px; margin-left:6px; }
+.out-tag { font-size:10px; font-weight:700; color:#0d1015; background:#7bd88f; border-radius:3px; padding:1px 4px; margin-left:6px; }
+.ret-tag { font-size:10px; font-weight:700; color:#fff; background:#5a636e; border-radius:3px; padding:1px 4px; margin-left:6px; }
+.tyre-dot { display:inline-block; width:11px; height:11px; border-radius:50%; margin-right:5px; vertical-align:-1px; border:1px solid rgba(255,255,255,.35); }
+.official-rc { margin-top:12px; }
+.official-rc h3, .official-wx { font-size:12px; color:#8b95a5; margin:0 0 6px; font-weight:600; }
+.official-rc ul { list-style:none; margin:0; padding:0; font-size:12px; }
+.official-rc li { padding:4px 0; border-bottom:1px solid #1a1f28; color:#cfd6df; }
+.official-rc .rc-time { color:#8b95a5; margin-right:8px; font-variant-numeric:tabular-nums; }
+.official-note { font-size:11px; color:#8b95a5; margin-top:8px; }
+
+</style>
+</head>
   <body>
     <div id="boot" class="boot">
       <p>セッション情報を読み込み中…</p>
@@ -384,6 +418,7 @@
             </div>
             <select class="session-select" id="sessionSelect" aria-label="セッション選択"></select>
             <button type="button" class="btn" id="refreshBtn" aria-label="データを更新">↻ 更新</button>
+            <button type="button" class="btn" id="officialBtn">📡 公式ライブ</button>
           </div>
         </div>
         <div class="hdr-row transport">
@@ -399,6 +434,30 @@
 
       <p class="banner-warn hidden" id="staleBanner"></p>
       <p class="banner-info hidden" id="upcomingBanner"></p>
+
+      <section class="official-panel hidden" id="officialPanel">
+  <div class="official-head">
+    <span class="official-title" id="offTitle">公式ライブ</span>
+    <span class="official-status" id="offStatus">接続中…</span>
+    <span class="official-clock" id="offClock"></span>
+    <span class="official-meta" id="offMeta"></span>
+  </div>
+  <div class="official-tablewrap">
+    <table class="official-tower">
+      <thead>
+        <tr><th>P</th><th>DRIVER</th><th>GAP</th><th>INT</th><th>BEST</th><th>LAST</th><th>S1</th><th>S2</th><th>S3</th><th>TYRE</th><th>LAP</th></tr>
+      </thead>
+      <tbody id="offTowerBody"><tr><td colspan="11">公式フィードに接続しています…</td></tr></tbody>
+    </table>
+  </div>
+  <p class="official-wx" id="offWx" style="margin-top:10px;"></p>
+  <div class="official-rc">
+    <h3>RACE CONTROL</h3>
+    <ul id="offRcList"></ul>
+  </div>
+  <p class="official-note" id="offNote"></p>
+</section>
+
 
       <main class="layout">
         <section class="col-map">
@@ -2295,5 +2354,184 @@
       requestAnimationFrame(function (t) { lastFrame = t; requestAnimationFrame(tick); });
     })();
     </script>
-  </body>
+  <script>
+/* ===== Official live feed mode (livetiming.formula1.com via free relay) ===== */
+(function () {
+  var RELAY = "https://f1-live-relay.vercel.app/api/state?collect=4500";
+  var on = false, timer = null, fetching = false;
+  var $ = function (id) { return document.getElementById(id); };
+
+  function asList(v) {
+    if (Array.isArray(v)) return v;
+    if (v && typeof v === "object") {
+      return Object.keys(v).sort(function (a, b) { return (+a) - (+b); }).map(function (k) { return v[k]; });
+    }
+    return [];
+  }
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+  function secCell(s) {
+    if (!s || !s.Value) return "<td></td>";
+    var cls = (s.OverallFastest || s.OverallFastest) ? "sec-ob" : (s.PersonalFastest ? "sec-pb" : "");
+    return '<td class="' + cls + '">' + esc(s.Value) + "</td>";
+  }
+  function bestOf(line) {
+    if (line.BestLapTime && line.BestLapTime.Value) return line.BestLapTime.Value;
+    var arr = asList(line.BestLapTimes).map(function (b) { return b && b.Value; }).filter(Boolean);
+    if (!arr.length) return "";
+    return arr.reduce(function (a, b) { return a < b ? a : b; });
+  }
+  function gapOf(line) {
+    if (line.GapToLeader) return line.GapToLeader;
+    if (line.TimeDiffToFastest) return line.TimeDiffToFastest;
+    var st = asList(line.Stats);
+    for (var i = st.length - 1; i >= 0; i--) {
+      if (st[i] && st[i].TimeDiffToFastest) return st[i].TimeDiffToFastest;
+    }
+    return "";
+  }
+  function intOf(line) {
+    if (line.IntervalToPositionAhead && line.IntervalToPositionAhead.Value) return line.IntervalToPositionAhead.Value;
+    if (line.TimeDiffToPositionAhead) return line.TimeDiffToPositionAhead;
+    var st = asList(line.Stats);
+    for (var i = st.length - 1; i >= 0; i--) {
+      if (st[i] && (st[i].TimeDifftoPositionAhead || st[i].TimeDiffToPositionAhead)) return st[i].TimeDifftoPositionAhead || st[i].TimeDiffToPositionAhead;
+    }
+    return "";
+  }
+  var TYRE_COLORS = { SOFT: "#da291c", MEDIUM: "#ffd12e", HARD: "#eeeeee", INTERMEDIATE: "#43b02a", WET: "#0067ff" };
+  function tyreOf(appLine) {
+    if (!appLine) return "";
+    var stints = asList(appLine.Stints);
+    if (!stints.length) return "";
+    var cur = stints[stints.length - 1];
+    var comp = (cur.Compound || "").toUpperCase();
+    if (!comp) return "";
+    var col = TYRE_COLORS[comp] || "#888";
+    var age = cur.TotalLaps != null ? cur.TotalLaps : "";
+    return '<span class="tyre-dot" style="background:' + col + '"></span>' + esc(comp.charAt(0)) + (age !== "" ? " " + esc(age) : "");
+  }
+  function fmtClock(r) {
+    if (!r) return "";
+    var m = String(r).match(/^(\d+):(\d{2}):(\d{2})/);
+    return m ? (m[1] === "00" ? m[2] + ":" + m[3] : m[1] + ":" + m[2] + ":" + m[3]) : String(r);
+  }
+
+  function render(d) {
+    var st = d.state || {};
+    var si = st.SessionInfo || {};
+    var meeting = (si.Meeting && si.Meeting.Name) || "";
+    $("offTitle").textContent = (meeting ? meeting + " / " : "") + (si.Name || "公式ライブ");
+    var statusTxt = si.SessionStatus || "";
+    var ts = st.TrackStatus || {};
+    var badge = $("offStatus");
+    var liveish = statusTxt === "Started";
+    badge.textContent = (ts.Message ? ts.Message + " · " : "") + statusTxt || "—";
+    badge.className = "official-status" + (liveish ? " live" : "");
+    var clock = st.ExtrapolatedClock || {};
+    var lap = st.LapCount || {};
+    var clockTxt = clock.Remaining ? fmtClock(clock.Remaining) : "";
+    if (lap.CurrentLap) clockTxt += (clockTxt ? " · " : "") + "LAP " + lap.CurrentLap + (lap.TotalLaps ? "/" + lap.TotalLaps : "");
+    $("offClock").textContent = clockTxt;
+    var wx = st.WeatherData || {};
+    var meta = [];
+    if (wx.AirTemp) meta.push("Air " + wx.AirTemp + "℃");
+    if (wx.TrackTemp) meta.push("Track " + wx.TrackTemp + "℃");
+    if (wx.WindSpeed) meta.push("Wind " + wx.WindSpeed + " m/s");
+    if (wx.Rainfall != null && wx.Rainfall !== "") meta.push(+wx.Rainfall > 0 ? "Rain" : "Dry");
+    $("offMeta").textContent = meta.join(" · ");
+    $("offWx").textContent = "";
+
+    var drivers = st.DriverList || {};
+    var appLines = (st.TimingAppData && st.TimingAppData.Lines) || {};
+    var lines = (st.TimingData && st.TimingData.Lines) || {};
+    var rows = Object.keys(lines).map(function (num) {
+      return { num: num, line: lines[num], drv: drivers[num] || {}, app: appLines[num] };
+    });
+    rows.sort(function (a, b) {
+      var pa = parseInt(a.line.Position, 10), pb = parseInt(b.line.Position, 10);
+      if (isNaN(pa)) pa = 999; if (isNaN(pb)) pb = 999;
+      return pa - pb;
+    });
+    if (!rows.length) {
+      $("offTowerBody").innerHTML = '<tr><td colspan="11">タイミングデータがまだありません（セッション開始前かもしれません）。</td></tr>';
+    } else {
+      $("offTowerBody").innerHTML = rows.map(function (r) {
+        var line = r.line, drv = r.drv;
+        var secs = asList(line.Sectors);
+        var tags = "";
+        if (line.Retired) tags += '<span class="ret-tag">RET</span>';
+        else if (line.InPit) tags += '<span class="pit-tag">PIT</span>';
+        else if (line.PitOut) tags += '<span class="out-tag">OUT</span>';
+        var team = drv.TeamName || "";
+        var cls = (team === "Ferrari" ? "ferrari" : "") + (line.Retired ? " retired" : "") + (line.InPit ? " inpit" : "");
+        var gap = gapOf(line);
+        if ((line.Position === "1" || line.Position === 1) && !gap) gap = si.Type === "Race" ? "Leader" : "—";
+        return "<tr class=\"" + cls.trim() + "\">" +
+          '<td class="official-pos">' + esc(line.Position || "—") + "</td>" +
+          "<td><span class=\"official-drv\"><span class=\"official-teambar\" style=\"background:#" + esc(drv.TeamColour || "666") + "\"></span>" +
+            esc(drv.Tla || line.RacingNumber || r.num) + tags + "</span> <span class=\"official-team\">" + esc(team) + "</span></td>" +
+          "<td>" + esc(gap) + "</td>" +
+          "<td>" + esc(intOf(line)) + "</td>" +
+          "<td>" + esc(bestOf(line)) + "</td>" +
+          "<td>" + esc(line.LastLapTime && line.LastLapTime.Value ? line.LastLapTime.Value : "") + "</td>" +
+          secCell(secs[0]) + secCell(secs[1]) + secCell(secs[2]) +
+          "<td>" + tyreOf(r.app) + "</td>" +
+          "<td>" + esc(line.NumberOfLaps != null ? line.NumberOfLaps : "") + "</td>" +
+          "</tr>";
+      }).join("");
+    }
+
+    var rc = asList(st.RaceControlMessages && st.RaceControlMessages.Messages);
+    rc = rc.slice().sort(function (a, b) { return String(b.Utc || "") < String(a.Utc || "") ? -1 : 1; }).slice(0, 6);
+    $("offRcList").innerHTML = rc.map(function (m) {
+      var t = m.Utc ? new Date(m.Utc).toLocaleTimeString("ja-JP", { hour12: false }) : "";
+      return '<li><span class="rc-time">' + esc(t) + "</span>" + esc(m.Message || "") + "</li>";
+    }).join("");
+    var fetched = d.fetchedAt ? new Date(d.fetchedAt).toLocaleTimeString("ja-JP", { hour12: false }) : "";
+    $("offNote").textContent = "出典: livetiming.formula1.com 公式フィード（無料中継経由） · 最終取得 " + fetched + (liveish ? " · 12秒ごとに更新" : " · セッション終了時は最終結果を表示");
+  }
+
+  async function poll() {
+    if (!on || fetching) return;
+    fetching = true;
+    try {
+      var res = await fetch(RELAY, { cache: "no-store" });
+      var d = await res.json();
+      if (!d.ok) throw new Error(d.error || "relay error");
+      if (on) render(d);
+    } catch (e) {
+      if (on) $("offNote").textContent = "公式フィードの取得に失敗しました。再試行します…（" + (e && e.message ? e.message : e) + "）";
+    } finally {
+      fetching = false;
+      if (on) timer = setTimeout(poll, 12000);
+    }
+  }
+
+  function setMode(next) {
+    on = next;
+    var panel = $("officialPanel");
+    var layout = document.querySelector("main.layout");
+    var transport = document.querySelector(".hdr-row.transport");
+    var btn = $("officialBtn");
+    panel.classList.toggle("hidden", !on);
+    if (layout) layout.style.display = on ? "none" : "";
+    if (transport) transport.style.display = on ? "none" : "";
+    btn.textContent = on ? "📡 公式ライブ ON" : "📡 公式ライブ";
+    btn.style.borderColor = on ? "#e10600" : "";
+    if (on) { poll(); }
+    else if (timer) { clearTimeout(timer); timer = null; }
+  }
+
+  document.addEventListener("DOMContentLoaded", function () {
+    var btn = $("officialBtn");
+    if (btn) btn.addEventListener("click", function () { setMode(!on); });
+  });
+})();
+</script>
+
+</body>
 </html>
